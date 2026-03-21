@@ -1,0 +1,119 @@
+# psh implementation plan
+
+Status legend: **done** = working, **partial** = compiles but incomplete, **stub** = scaffold only
+
+## Current state
+
+| Crate | Status | What works | What's missing |
+|---|---|---|---|
+| psh-core | **done** | Config parsing + hot-reload, IPC protocol, theme loading, D-Bus helpers, error types, logging. 8 tests. | — |
+| psh-wall | **done** | Multi-output layer surfaces, all wallpaper modes (fill/fit/center/stretch/tile), HiDPI scale factor, output hotplug, IPC `SetWallpaper` listener, calloop event loop, SIGTERM shutdown | — |
+| psh-notify | **partial** | D-Bus server (`org.freedesktop.Notifications`), popup window with summary/body, auto-dismiss timeout | Notification stacking/positioning, action buttons, urgency styling, notification history/count, IPC `NotificationCount` broadcast, replace-id visual update, icons |
+| psh-polkit | **partial** | D-Bus agent interface, GTK4 auth dialog with password entry, cancel/auth buttons | Actually registering with polkit authority (`RegisterAuthenticationAgent` call), passing password back through polkit's `AuthenticationAgentResponse`, proper identity/user handling, error feedback on wrong password |
+| psh-launch | **partial** | .desktop file parsing, fuzzy search with nucleo, GTK4 overlay, keyboard close, row activation launches app | IPC toggle (`ToggleLauncher` listener), terminal app support (launch in configured terminal), icon display, recent/frequent sorting, multi-instance prevention (toggle on/off) |
+| psh-clip | **partial** | Clipboard history data structure (with tests), GTK4 picker UI, IPC listener | Actual clipboard monitoring (`zwlr-data-control-v1`), paste-on-select (set clipboard from history), persistent history across restarts, image clipboard support |
+| psh-bar | **partial** | Layer-shell panel, CenterBox layout, IPC hub (accept + ping/pong), clock module (live), battery module (sysfs), static workspace buttons | Workspace module (niri IPC / ext-workspace), tray module (SNI protocol), volume module (PulseAudio/PipeWire), network module, window title module, IPC message routing to clients, configurable module loading, click actions |
+| psh-lock | **stub** | Wayland surface + SCTK boilerplate, PAM function signature | ext-session-lock-v1 binding, keyboard input handling, tiny-skia password entry rendering, actual PAM conversation, multi-output lock surfaces, idle/DPMS integration |
+
+## Phases
+
+### Phase 1 — Make psh-wall fully functional
+The simplest component. Get it production-ready first.
+
+- [x] Handle multiple outputs (one layer surface per wl_output)
+- [x] Implement wallpaper modes: fill (done), fit, center, stretch, tile
+- [x] Handle output hotplug (new/removed monitors)
+- [x] Handle scale factor (HiDPI)
+- [x] Listen on IPC for `SetWallpaper` messages to change wallpaper at runtime
+- [x] Graceful shutdown on SIGTERM
+
+### Phase 2 — Make psh-notify fully functional
+First real GTK4 component, testable with `notify-send`.
+
+- [ ] Notification stacking — offset each popup below the previous one
+- [ ] Track active notifications, respect `max_visible` config
+- [ ] Urgency levels (`low`/`normal`/`critical`) with distinct styling
+- [ ] Action buttons — render and emit `ActionInvoked` D-Bus signal on click
+- [ ] `NotificationClosed` D-Bus signal with proper reason codes
+- [ ] Replace-id support — update existing popup instead of creating new one
+- [ ] App icon display (from icon name or image data hint)
+- [ ] Broadcast `NotificationCount` over IPC to psh-bar
+
+### Phase 3 — Make psh-polkit functional
+Small scope, high value — needed for any privileged action.
+
+- [ ] Call `RegisterAuthenticationAgent` on the polkit authority at startup
+- [ ] Parse identity list properly (extract unix-user uid)
+- [ ] Send password back via `AuthenticationAgentResponse2` D-Bus call
+- [ ] Handle auth failure — show error label, allow retry
+- [ ] Handle `cancel_authentication` — close dialog
+- [ ] Proper session/subject detection for registration
+
+### Phase 4 — Make psh-launch functional
+Keyboard-driven launcher overlay.
+
+- [ ] IPC client — listen for `ToggleLauncher`, toggle window visibility
+- [ ] Single-instance — second launch sends toggle via IPC instead of starting new process
+- [ ] Terminal app support — detect `Terminal=true` in .desktop, launch via configured terminal
+- [ ] Icon display — resolve icon names to paths via icon theme spec
+- [ ] Frecency sorting — track launch counts, weight recent + frequent apps higher
+- [ ] Enter key activates selected row
+- [ ] Up/Down arrow key navigation in results
+
+### Phase 5 — Make psh-clip functional
+Clipboard daemon + picker.
+
+- [ ] Implement `zwlr-data-control-v1` clipboard monitoring via smithay-client-toolkit
+- [ ] Store clipboard entries in `ClipHistory` as they arrive
+- [ ] Paste-on-select — when user picks a history item, set it as the active clipboard selection
+- [ ] Persistent history — save/load to `$XDG_DATA_HOME/psh/clip_history.json`
+- [ ] Image clipboard support (store as paths to temp files)
+- [ ] Search/filter in picker UI
+
+### Phase 6 — Make psh-bar the integration hub
+Biggest component. Depends on stable IPC + other components.
+
+- [ ] **Workspace module** — connect to niri IPC socket, parse workspace list, update buttons on change, click to switch. Fallback: ext-workspace-v1 protocol.
+- [ ] **Window title module** — niri IPC for focused window title, or ext-foreign-toplevel
+- [ ] **Tray module** — implement StatusNotifierItem (SNI) / StatusNotifierWatcher D-Bus protocols, or integrate `system-tray` crate
+- [ ] **Volume module** — PipeWire/PulseAudio via `libpulse-binding` or `wireplumber` D-Bus, show level + mute, scroll to adjust
+- [ ] **Network module** — NetworkManager D-Bus interface, show connection type + name
+- [ ] **IPC message routing** — when hub receives `ToggleLauncher` etc., forward to connected clients
+- [ ] **Configurable module loading** — read `modules_left`/`modules_center`/`modules_right` from config, instantiate dynamically
+- [ ] **Click actions** — launcher button sends `ToggleLauncher`, clip button sends `ShowClipboardHistory`
+- [ ] **Module trait** — extract `BarModule` trait, refactor existing modules to implement it
+
+### Phase 7 — Make psh-lock security-complete
+Built last. Security-critical — must be correct.
+
+- [ ] Bind `ext-session-lock-v1` protocol — acquire lock, get lock surfaces for all outputs
+- [ ] Keyboard input handling via `wl_keyboard` — accumulate password characters
+- [ ] Render password UI with tiny-skia — centered input field with dots, clock, user info
+- [ ] PAM conversation function — supply password from keyboard input to PAM
+- [ ] On successful auth, destroy lock and exit
+- [ ] On failed auth, show error, clear password, allow retry
+- [ ] Multi-output — render lock surface on every output, handle hotplug
+- [ ] Grace period / idle integration — optional `swayidle`/`hypridle` compatibility
+- [ ] Ensure no input leaks through to underlying surfaces while locked
+
+### Phase 8 — Polish and integration
+
+- [ ] `.gitignore` and CI (`cargo build`, `cargo test`, `cargo clippy`, `cargo fmt --check`)
+- [ ] `README.md` with screenshots, install instructions, config reference
+- [ ] Config validation — warn on unknown keys, suggest corrections
+- [ ] Hot-reload for all components — broadcast `ConfigReloaded` via IPC, components re-read their section
+- [ ] Theme hot-reload — watch CSS file, re-apply on change
+- [ ] Graceful shutdown for all components (handle SIGTERM, clean up resources)
+- [ ] `psh-ctl` CLI tool — send IPC commands (`psh-ctl lock`, `psh-ctl wall set /path/to/img`)
+- [ ] Packaging — `Makefile` / `just` recipes for install, systemd unit installation
+- [ ] AUR / Gentoo ebuild
+
+## Key risks
+
+| Risk | Mitigation |
+|---|---|
+| GTK4-layer-shell keyboard grab on niri | Test psh-launch early on niri, file upstream bugs if needed |
+| SNI tray protocol complexity | Consider `system-tray` crate before hand-rolling |
+| `zwlr-data-control` clipboard source lifetime | psh-clip daemon must stay alive and re-offer data on each paste |
+| PAM thread safety in psh-lock | Dedicated thread for PAM, never on Wayland event loop |
+| Multi-monitor hotplug | Every layer-shell component must handle output add/remove events |

@@ -28,15 +28,15 @@ pub fn socket_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp/psh.sock"))
 }
 
-/// Write a length-prefixed JSON message to a stream.
-pub async fn send(stream: &mut UnixStream, msg: &Message) -> Result<()> {
+/// Write a length-prefixed JSON message to any async writer.
+pub async fn send_to<W: AsyncWriteExt + Unpin>(writer: &mut W, msg: &Message) -> Result<()> {
     let payload = serde_json::to_vec(msg)?;
     let len = (payload.len() as u32).to_be_bytes();
-    stream
+    writer
         .write_all(&len)
         .await
         .map_err(|e| PshError::Ipc(e.to_string()))?;
-    stream
+    writer
         .write_all(&payload)
         .await
         .map_err(|e| PshError::Ipc(e.to_string()))?;
@@ -44,10 +44,10 @@ pub async fn send(stream: &mut UnixStream, msg: &Message) -> Result<()> {
     Ok(())
 }
 
-/// Read a length-prefixed JSON message from a stream.
-pub async fn recv(stream: &mut UnixStream) -> Result<Message> {
+/// Read a length-prefixed JSON message from any async reader.
+pub async fn recv_from<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Message> {
     let mut len_buf = [0u8; 4];
-    stream
+    reader
         .read_exact(&mut len_buf)
         .await
         .map_err(|e| PshError::Ipc(e.to_string()))?;
@@ -58,7 +58,7 @@ pub async fn recv(stream: &mut UnixStream) -> Result<Message> {
     }
 
     let mut buf = vec![0u8; len];
-    stream
+    reader
         .read_exact(&mut buf)
         .await
         .map_err(|e| PshError::Ipc(e.to_string()))?;
@@ -66,6 +66,16 @@ pub async fn recv(stream: &mut UnixStream) -> Result<Message> {
     let msg: Message = serde_json::from_slice(&buf)?;
     debug!("received ipc message: {msg:?}");
     Ok(msg)
+}
+
+/// Write a length-prefixed JSON message to a UnixStream.
+pub async fn send(stream: &mut UnixStream, msg: &Message) -> Result<()> {
+    send_to(stream, msg).await
+}
+
+/// Read a length-prefixed JSON message from a UnixStream.
+pub async fn recv(stream: &mut UnixStream) -> Result<Message> {
+    recv_from(stream).await
 }
 
 /// Connect to the psh IPC hub as a client.

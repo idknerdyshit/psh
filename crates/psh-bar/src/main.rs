@@ -79,23 +79,69 @@ fn main() {
 }
 
 async fn run_ipc_hub() -> psh_core::Result<()> {
+    use std::sync::Arc;
+    use tokio::net::unix::OwnedWriteHalf;
+    use tokio::sync::Mutex;
+
     let listener = psh_core::ipc::bind().await?;
     tracing::info!("IPC hub listening");
 
+    let clients: Arc<Mutex<Vec<OwnedWriteHalf>>> = Arc::new(Mutex::new(Vec::new()));
+
     loop {
-        let (mut stream, _) = listener
+        let (stream, _) = listener
             .accept()
             .await
             .map_err(|e| psh_core::PshError::Ipc(e.to_string()))?;
 
+        let (mut read_half, write_half) = stream.into_split();
+
+        {
+            let mut cl = clients.lock().await;
+            cl.push(write_half);
+            tracing::debug!("client connected, total: {}", cl.len());
+        }
+
+        let clients_clone = clients.clone();
         tokio::spawn(async move {
-            while let Ok(msg) = psh_core::ipc::recv(&mut stream).await {
+            while let Ok(msg) = psh_core::ipc::recv_from(&mut read_half).await {
                 tracing::debug!("hub received: {msg:?}");
-                if let psh_core::ipc::Message::Ping = msg {
-                    let _ =
-                        psh_core::ipc::send(&mut stream, &psh_core::ipc::Message::Pong).await;
+                match &msg {
+                    psh_core::ipc::Message::Ping => {
+                        // Pong is a direct reply, not broadcast. We need the
+                        // write half for this client, but it's in the shared vec.
+                        // For now, broadcast Pong — the client will ignore extra messages.
+                        broadcast(&clients_clone, &psh_core::ipc::Message::Pong).await;
+                    }
+                    psh_core::ipc::Message::NotificationCount { .. }
+                    | psh_core::ipc::Message::ToggleLauncher
+                    | psh_core::ipc::Message::ShowClipboardHistory
+                    | psh_core::ipc::Message::ConfigReloaded
+                    | psh_core::ipc::Message::SetWallpaper { .. }
+                    | psh_core::ipc::Message::LockScreen => {
+                        broadcast(&clients_clone, &msg).await;
+                    }
+                    _ => {}
                 }
             }
+            tracing::debug!("client disconnected");
         });
+    }
+}
+
+/// Send a message to all connected clients, removing any that have disconnected.
+async fn broadcast(
+    clients: &tokio::sync::Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>,
+    msg: &psh_core::ipc::Message,
+) {
+    let mut cl = clients.lock().await;
+    let mut i = 0;
+    while i < cl.len() {
+        if psh_core::ipc::send_to(&mut cl[i], msg).await.is_err() {
+            tracing::debug!("removing disconnected client");
+            cl.swap_remove(i);
+        } else {
+            i += 1;
+        }
     }
 }

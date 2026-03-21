@@ -1,19 +1,17 @@
-#![allow(dead_code, unused_imports)]
-
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use psh_core::config::{self, WallMode};
+use psh_core::config::{self, expand_tilde, WallMode};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
-    output::{OutputHandler, OutputInfo, OutputState},
+    output::{OutputHandler, OutputState},
     reexports::{
         calloop::{
             self,
-            channel::{Channel, Sender},
-            EventLoop, LoopHandle,
+            channel::Sender,
+            EventLoop,
         },
         calloop_wayland_source::WaylandSource,
     },
@@ -37,58 +35,72 @@ use wayland_client::{
     Connection, QueueHandle,
 };
 
-// ---------------------------------------------------------------------------
-// IPC command sent from the background thread to the calloop main loop
-// ---------------------------------------------------------------------------
-
+/// Command sent from the IPC background thread to the calloop main loop via a
+/// [`calloop::channel`]. Each variant corresponds to an IPC message that psh-wall handles.
 enum IpcCommand {
+    /// Change the displayed wallpaper to the image at `path`.
     SetWallpaper { path: String },
 }
 
-// ---------------------------------------------------------------------------
-// Per-output state
-// ---------------------------------------------------------------------------
-
+/// Per-output Wayland surface state. One instance exists for each connected monitor.
 struct OutputSurface {
+    /// The Wayland output (monitor) this surface is bound to.
     output: wl_output::WlOutput,
+    /// The wlr-layer-shell surface anchored to this output's background layer.
     layer_surface: LayerSurface,
+    /// The most recently attached shm buffer, kept alive to prevent use-after-free.
     buffer: Option<Buffer>,
+    /// Surface width in logical pixels (set by the compositor on configure).
     width: u32,
+    /// Surface height in logical pixels (set by the compositor on configure).
     height: u32,
+    /// HiDPI scale factor for this output. Buffer dimensions are multiplied by this.
     scale_factor: i32,
+    /// Whether the compositor has sent an initial configure event for this surface.
     configured: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Main application state
-// ---------------------------------------------------------------------------
-
+/// Main application state for psh-wall.
+///
+/// Holds all Wayland protocol state, the shared memory pool used for buffer allocation,
+/// per-output surfaces, and the currently loaded wallpaper image.
 struct WallState {
     registry: RegistryState,
     output: OutputState,
     compositor: CompositorState,
     layer_shell: LayerShell,
     shm: Shm,
+    /// Shared memory pool for allocating wl_shm buffers.
     pool: SlotPool,
+    /// One [`OutputSurface`] per connected monitor.
     surfaces: Vec<OutputSurface>,
+    /// The currently loaded wallpaper image, or `None` for solid-color fallback.
     image_data: Option<image::RgbaImage>,
+    /// How the wallpaper image is scaled/positioned on each output.
     wall_mode: WallMode,
+    /// Set to `false` to exit the main event loop.
     running: bool,
 }
 
 impl WallState {
+    /// Returns the index of the [`OutputSurface`] that owns the given layer surface.
     fn surface_idx_for_layer(&self, layer: &LayerSurface) -> Option<usize> {
         self.surfaces
             .iter()
             .position(|s| s.layer_surface.wl_surface() == layer.wl_surface())
     }
 
+    /// Returns the index of the [`OutputSurface`] that owns the given `wl_surface`.
     fn surface_idx_for_wl(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
         self.surfaces
             .iter()
             .position(|s| s.layer_surface.wl_surface() == surface)
     }
 
+    /// Creates a new layer-shell background surface for the given output.
+    ///
+    /// The surface is anchored to all edges with exclusive zone -1 (behind everything),
+    /// no keyboard interactivity, and the output's current scale factor applied.
     fn create_output_surface(
         &mut self,
         qh: &QueueHandle<Self>,
@@ -133,22 +145,41 @@ impl WallState {
         });
     }
 
+    /// Renders the wallpaper (or fallback color) into an shm buffer and commits it
+    /// to the surface at the given index. Skips rendering if the surface has zero dimensions.
     fn draw(&mut self, idx: usize) {
         let surf = &self.surfaces[idx];
         if surf.width == 0 || surf.height == 0 {
             return;
         }
 
-        let buf_w = surf.width * surf.scale_factor as u32;
-        let buf_h = surf.height * surf.scale_factor as u32;
+        let scale = surf.scale_factor.max(1) as u32;
+        if surf.scale_factor < 1 {
+            tracing::warn!(surface = idx, scale_factor = surf.scale_factor, "unexpected scale factor, clamping to 1");
+        }
+        let buf_w = surf.width * scale;
+        let buf_h = surf.height * scale;
         let stride = buf_w as i32 * 4;
 
-        let (buffer, canvas) = self
+        tracing::debug!(
+            surface = idx,
+            buf_w,
+            buf_h,
+            has_image = self.image_data.is_some(),
+            "drawing surface"
+        );
+
+        let (buffer, canvas) = match self
             .pool
             .create_buffer(buf_w as i32, buf_h as i32, stride, wl_shm::Format::Argb8888)
-            .expect("failed to create buffer");
+        {
+            Ok(bc) => bc,
+            Err(e) => {
+                tracing::error!(surface = idx, buf_w, buf_h, "failed to create buffer: {e}");
+                return;
+            }
+        };
 
-        // Fill with fallback color first (#1e1e2e — Catppuccin base)
         fill_solid(canvas, 0x1e, 0x1e, 0x2e);
 
         if let Some(ref img) = self.image_data {
@@ -166,8 +197,10 @@ impl WallState {
         surf.buffer = Some(buffer);
     }
 
+    /// Redraws every configured surface. Called after a wallpaper change via IPC.
     fn redraw_all(&mut self) {
         let count = self.surfaces.len();
+        tracing::debug!(count, "redrawing all surfaces");
         for i in 0..count {
             if self.surfaces[i].configured {
                 self.draw(i);
@@ -175,21 +208,20 @@ impl WallState {
         }
     }
 
+    /// Dispatches an [`IpcCommand`] received from the background IPC listener thread.
     fn handle_ipc(&mut self, cmd: IpcCommand) {
         match cmd {
             IpcCommand::SetWallpaper { path } => {
-                tracing::info!("IPC: changing wallpaper to {path}");
-                self.image_data = load_image(Path::new(&path));
+                let path = expand_tilde(Path::new(&path));
+                tracing::info!("IPC: changing wallpaper to {}", path.display());
+                self.image_data = load_image(&path);
                 self.redraw_all();
             }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Image loading
-// ---------------------------------------------------------------------------
-
+/// Loads an image from disk and converts it to RGBA8. Returns `None` on failure.
 fn load_image(path: &Path) -> Option<image::RgbaImage> {
     match image::open(path) {
         Ok(img) => {
@@ -203,10 +235,7 @@ fn load_image(path: &Path) -> Option<image::RgbaImage> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Wallpaper rendering
-// ---------------------------------------------------------------------------
-
+/// Fills every pixel in `canvas` with a solid color in ARGB8888 format (fully opaque).
 fn fill_solid(canvas: &mut [u8], r: u8, g: u8, b: u8) {
     for chunk in canvas.chunks_exact_mut(4) {
         chunk[0] = b;
@@ -216,9 +245,10 @@ fn fill_solid(canvas: &mut [u8], r: u8, g: u8, b: u8) {
     }
 }
 
+/// Writes a single pixel to `canvas` at the given byte offset, converting from
+/// the `image` crate's RGBA order to the Wayland ARGB8888 byte order (B, G, R, A).
 #[inline]
 fn write_pixel(canvas: &mut [u8], offset: usize, pixel: &image::Rgba<u8>) {
-    // ARGB8888 byte order: B, G, R, A
     canvas[offset] = pixel[2];
     canvas[offset + 1] = pixel[1];
     canvas[offset + 2] = pixel[0];
@@ -266,6 +296,7 @@ fn blit_region(
     }
 }
 
+/// Renders `img` onto `canvas` using the specified [`WallMode`] scaling strategy.
 fn render_wallpaper(
     canvas: &mut [u8],
     buf_w: u32,
@@ -273,6 +304,14 @@ fn render_wallpaper(
     img: &image::RgbaImage,
     mode: &WallMode,
 ) {
+    tracing::debug!(
+        mode = ?mode,
+        img_w = img.width(),
+        img_h = img.height(),
+        buf_w,
+        buf_h,
+        "rendering wallpaper"
+    );
     match mode {
         WallMode::Fill => render_fill(canvas, buf_w, buf_h, img),
         WallMode::Fit => render_fit(canvas, buf_w, buf_h, img),
@@ -282,6 +321,7 @@ fn render_wallpaper(
     }
 }
 
+/// Scales the image to cover the entire canvas, cropping overflow from the center.
 fn render_fill(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage) {
     let (iw, ih) = (img.width() as f64, img.height() as f64);
     let (bw, bh) = (buf_w as f64, buf_h as f64);
@@ -294,6 +334,8 @@ fn render_fill(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage
     blit_region(canvas, buf_w, buf_h, &resized, x_off, y_off);
 }
 
+/// Scales the image to fit within the canvas, centering it and letterboxing with the
+/// fallback background color.
 fn render_fit(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage) {
     let (iw, ih) = (img.width() as f64, img.height() as f64);
     let (bw, bh) = (buf_w as f64, buf_h as f64);
@@ -306,17 +348,20 @@ fn render_fit(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage)
     blit_at(canvas, buf_w, buf_h, &resized, x_off, y_off);
 }
 
+/// Stretches the image to fill the canvas exactly, ignoring aspect ratio.
 fn render_stretch(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage) {
     let resized = image::imageops::resize(img, buf_w, buf_h, image::imageops::Lanczos3);
     blit_at(canvas, buf_w, buf_h, &resized, 0, 0);
 }
 
+/// Places the image at its original size, centered on the canvas without scaling.
 fn render_center(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage) {
     let x_off = buf_w.saturating_sub(img.width()) / 2;
     let y_off = buf_h.saturating_sub(img.height()) / 2;
     blit_at(canvas, buf_w, buf_h, img, x_off, y_off);
 }
 
+/// Repeats the image at its original size across the entire canvas.
 fn render_tile(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage) {
     let (iw, ih) = (img.width(), img.height());
     if iw == 0 || ih == 0 {
@@ -333,11 +378,11 @@ fn render_tile(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage
     }
 }
 
-// ---------------------------------------------------------------------------
-// IPC background thread
-// ---------------------------------------------------------------------------
-
+/// Spawns a background thread that connects to the psh-bar IPC hub and listens
+/// for wallpaper-related messages. Automatically reconnects on disconnection.
+/// Commands are forwarded to the calloop main loop via the `sender` channel.
 fn spawn_ipc_listener(sender: Sender<IpcCommand>) {
+    tracing::info!("spawning IPC listener thread");
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -375,10 +420,7 @@ fn spawn_ipc_listener(sender: Sender<IpcCommand>) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Wayland protocol handler impls
-// ---------------------------------------------------------------------------
-
+/// Handles compositor events: redraws surfaces when scale factor changes.
 impl CompositorHandler for WallState {
     fn scale_factor_changed(
         &mut self,
@@ -439,6 +481,8 @@ impl CompositorHandler for WallState {
     }
 }
 
+/// Handles output (monitor) hotplug: creates surfaces for new outputs, updates scale
+/// factors, and cleans up surfaces when outputs are removed.
 impl OutputHandler for WallState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output
@@ -459,17 +503,21 @@ impl OutputHandler for WallState {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
-        if let (Some(info), Some(surf)) = (
-            self.output.info(&output),
-            self.surfaces.iter_mut().find(|s| s.output == output),
-        ) {
-            let new_scale = info.scale_factor;
-            if surf.scale_factor != new_scale {
-                tracing::info!("output scale updated to {new_scale}");
-                surf.scale_factor = new_scale;
-                surf.layer_surface
-                    .wl_surface()
-                    .set_buffer_scale(new_scale);
+        let Some(new_scale) = self.output.info(&output).map(|i| i.scale_factor) else {
+            return;
+        };
+        let Some(idx) = self.surfaces.iter().position(|s| s.output == output) else {
+            return;
+        };
+        if self.surfaces[idx].scale_factor != new_scale {
+            tracing::info!("output scale updated to {new_scale}");
+            self.surfaces[idx].scale_factor = new_scale;
+            self.surfaces[idx]
+                .layer_surface
+                .wl_surface()
+                .set_buffer_scale(new_scale);
+            if self.surfaces[idx].configured {
+                self.draw(idx);
             }
         }
     }
@@ -490,6 +538,7 @@ impl OutputHandler for WallState {
     }
 }
 
+/// Handles layer-shell events: draws wallpaper on configure and cleans up on close.
 impl LayerShellHandler for WallState {
     fn closed(
         &mut self,
@@ -543,16 +592,13 @@ delegate_layer!(WallState);
 delegate_shm!(WallState);
 delegate_registry!(WallState);
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
 fn main() {
     psh_core::logging::init("psh_wall");
     tracing::info!("starting psh-wall");
 
     let cfg = config::load().expect("failed to load config");
     let wall_cfg = cfg.wall;
+    tracing::debug!(path = ?wall_cfg.path, mode = ?wall_cfg.mode, "loaded config");
 
     // Set up SIGTERM/SIGINT flag
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -570,7 +616,7 @@ fn main() {
     let layer_shell = LayerShell::bind(&globals, &qh).expect("wlr-layer-shell not available");
     let shm = Shm::bind(&globals, &qh).expect("wl_shm not available");
 
-    let pool = SlotPool::new(256 * 256 * 4, &shm).expect("failed to create shm pool");
+    let pool = SlotPool::new(1920 * 1080 * 4, &shm).expect("failed to create shm pool");
     let image_data = wall_cfg.path.as_deref().and_then(load_image);
 
     let mut state = WallState {
@@ -623,4 +669,264 @@ fn main() {
     // Clean shutdown — drop surfaces to send destroy requests
     state.surfaces.clear();
     tracing::info!("psh-wall exiting");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use psh_core::config::WallMode;
+
+    /// Creates a solid-color RGBA test image.
+    fn make_image(w: u32, h: u32, pixel: [u8; 4]) -> image::RgbaImage {
+        image::RgbaImage::from_fn(w, h, |_, _| image::Rgba(pixel))
+    }
+
+    /// Allocates a canvas buffer of the given dimensions (4 bytes per pixel).
+    fn make_canvas(w: u32, h: u32) -> Vec<u8> {
+        vec![0u8; (w * h * 4) as usize]
+    }
+
+    /// Reads the BGRA bytes at the given canvas coordinate.
+    fn read_pixel(canvas: &[u8], buf_w: u32, x: u32, y: u32) -> [u8; 4] {
+        let offset = ((y * buf_w + x) * 4) as usize;
+        [
+            canvas[offset],
+            canvas[offset + 1],
+            canvas[offset + 2],
+            canvas[offset + 3],
+        ]
+    }
+
+    // ---- fill_solid ----
+
+    #[test]
+    fn test_fill_solid_sets_all_pixels() {
+        let mut canvas = make_canvas(3, 2);
+        fill_solid(&mut canvas, 0xAA, 0xBB, 0xCC);
+        // ARGB8888 byte order: B, G, R, A
+        for chunk in canvas.chunks_exact(4) {
+            assert_eq!(chunk, [0xCC, 0xBB, 0xAA, 0xFF]);
+        }
+    }
+
+    // ---- write_pixel ----
+
+    #[test]
+    fn test_write_pixel_argb_order() {
+        let mut canvas = [0u8; 4];
+        let pixel = image::Rgba([0x11, 0x22, 0x33, 0x44]); // R=0x11, G=0x22, B=0x33, A=0x44
+        write_pixel(&mut canvas, 0, &pixel);
+        // Expect BGRA order: B=0x33, G=0x22, R=0x11, A=0x44
+        assert_eq!(canvas, [0x33, 0x22, 0x11, 0x44]);
+    }
+
+    // ---- blit_at ----
+
+    #[test]
+    fn test_blit_at_origin() {
+        let img = make_image(2, 2, [0xFF, 0x00, 0x00, 0xFF]); // red
+        let mut canvas = make_canvas(4, 4);
+        fill_solid(&mut canvas, 0, 0, 0);
+        blit_at(&mut canvas, 4, 4, &img, 0, 0);
+
+        // Top-left 2x2 should be red (BGRA: 0x00, 0x00, 0xFF, 0xFF)
+        assert_eq!(read_pixel(&canvas, 4, 0, 0), [0x00, 0x00, 0xFF, 0xFF]);
+        assert_eq!(read_pixel(&canvas, 4, 1, 1), [0x00, 0x00, 0xFF, 0xFF]);
+        // Outside the blit region should be black
+        assert_eq!(read_pixel(&canvas, 4, 2, 0), [0x00, 0x00, 0x00, 0xFF]);
+    }
+
+    #[test]
+    fn test_blit_at_offset() {
+        let img = make_image(1, 1, [0x00, 0xFF, 0x00, 0xFF]); // green
+        let mut canvas = make_canvas(4, 4);
+        fill_solid(&mut canvas, 0, 0, 0);
+        blit_at(&mut canvas, 4, 4, &img, 2, 3);
+
+        // Only (2,3) should be green
+        assert_eq!(read_pixel(&canvas, 4, 2, 3), [0x00, 0xFF, 0x00, 0xFF]);
+        // Adjacent pixels should remain black
+        assert_eq!(read_pixel(&canvas, 4, 1, 3), [0x00, 0x00, 0x00, 0xFF]);
+        assert_eq!(read_pixel(&canvas, 4, 3, 3), [0x00, 0x00, 0x00, 0xFF]);
+    }
+
+    #[test]
+    fn test_blit_at_clips_to_bounds() {
+        // 3x3 image blitted at (2,2) on a 4x4 canvas — only a 2x2 region should be written
+        let img = make_image(3, 3, [0x00, 0x00, 0xFF, 0xFF]); // blue
+        let mut canvas = make_canvas(4, 4);
+        fill_solid(&mut canvas, 0, 0, 0);
+        blit_at(&mut canvas, 4, 4, &img, 2, 2);
+
+        // (2,2) and (3,3) should be blue
+        assert_eq!(read_pixel(&canvas, 4, 2, 2), [0xFF, 0x00, 0x00, 0xFF]);
+        assert_eq!(read_pixel(&canvas, 4, 3, 3), [0xFF, 0x00, 0x00, 0xFF]);
+        // (1,1) should still be black
+        assert_eq!(read_pixel(&canvas, 4, 1, 1), [0x00, 0x00, 0x00, 0xFF]);
+    }
+
+    #[test]
+    fn test_blit_at_zero_canvas() {
+        let img = make_image(2, 2, [0xFF, 0x00, 0x00, 0xFF]);
+        let mut canvas = make_canvas(0, 0);
+        // Should not panic
+        blit_at(&mut canvas, 0, 0, &img, 0, 0);
+    }
+
+    // ---- blit_region ----
+
+    #[test]
+    fn test_blit_region_extracts_subregion() {
+        // 4x4 image, blit the bottom-right 2x2 onto a 2x2 canvas
+        let mut img = image::RgbaImage::new(4, 4);
+        // Set bottom-right quadrant to green
+        for y in 2..4 {
+            for x in 2..4 {
+                img.put_pixel(x, y, image::Rgba([0x00, 0xFF, 0x00, 0xFF]));
+            }
+        }
+        let mut canvas = make_canvas(2, 2);
+        blit_region(&mut canvas, 2, 2, &img, 2, 2);
+
+        assert_eq!(read_pixel(&canvas, 2, 0, 0), [0x00, 0xFF, 0x00, 0xFF]);
+        assert_eq!(read_pixel(&canvas, 2, 1, 1), [0x00, 0xFF, 0x00, 0xFF]);
+    }
+
+    // ---- render_center ----
+
+    #[test]
+    fn test_render_center_places_image_in_middle() {
+        let img = make_image(2, 2, [0xFF, 0x00, 0x00, 0xFF]); // red
+        let mut canvas = make_canvas(6, 6);
+        fill_solid(&mut canvas, 0, 0, 0);
+        render_center(&mut canvas, 6, 6, &img);
+
+        // Image should be at (2,2) to (3,3)
+        assert_eq!(read_pixel(&canvas, 6, 2, 2), [0x00, 0x00, 0xFF, 0xFF]);
+        assert_eq!(read_pixel(&canvas, 6, 3, 3), [0x00, 0x00, 0xFF, 0xFF]);
+        // Corners should be black
+        assert_eq!(read_pixel(&canvas, 6, 0, 0), [0x00, 0x00, 0x00, 0xFF]);
+        assert_eq!(read_pixel(&canvas, 6, 5, 5), [0x00, 0x00, 0x00, 0xFF]);
+    }
+
+    // ---- render_tile ----
+
+    #[test]
+    fn test_render_tile_repeats() {
+        let img = make_image(2, 2, [0xFF, 0x00, 0x00, 0xFF]); // red
+        let mut canvas = make_canvas(4, 4);
+        fill_solid(&mut canvas, 0, 0, 0);
+        render_tile(&mut canvas, 4, 4, &img);
+
+        // All pixels should be red since 2x2 tiles perfectly into 4x4
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(
+                    read_pixel(&canvas, 4, x, y),
+                    [0x00, 0x00, 0xFF, 0xFF],
+                    "pixel ({x},{y}) should be red"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_render_tile_zero_size_image() {
+        let img = make_image(0, 0, [0xFF, 0x00, 0x00, 0xFF]);
+        let mut canvas = make_canvas(4, 4);
+        // Should not panic or loop infinitely
+        render_tile(&mut canvas, 4, 4, &img);
+    }
+
+    // ---- render_stretch ----
+
+    #[test]
+    fn test_render_stretch_covers_canvas() {
+        let img = make_image(1, 1, [0xFF, 0x00, 0x00, 0xFF]); // red
+        let mut canvas = make_canvas(4, 4);
+        fill_solid(&mut canvas, 0, 0, 0);
+        render_stretch(&mut canvas, 4, 4, &img);
+
+        // Every pixel should have been written (no longer the fill color)
+        for y in 0..4 {
+            for x in 0..4 {
+                let px = read_pixel(&canvas, 4, x, y);
+                assert_ne!(
+                    px,
+                    [0x00, 0x00, 0x00, 0xFF],
+                    "pixel ({x},{y}) should not be black after stretch"
+                );
+            }
+        }
+    }
+
+    // ---- render_fill ----
+
+    #[test]
+    fn test_render_fill_covers_canvas() {
+        // Wide image on a tall canvas — fill should cover everything
+        let img = make_image(8, 2, [0x00, 0xFF, 0x00, 0xFF]); // green
+        let mut canvas = make_canvas(4, 4);
+        fill_solid(&mut canvas, 0, 0, 0);
+        render_fill(&mut canvas, 4, 4, &img);
+
+        // No pixel should remain the fill color
+        for y in 0..4 {
+            for x in 0..4 {
+                let px = read_pixel(&canvas, 4, x, y);
+                assert_ne!(
+                    px,
+                    [0x00, 0x00, 0x00, 0xFF],
+                    "pixel ({x},{y}) should not be black after fill"
+                );
+            }
+        }
+    }
+
+    // ---- render_fit ----
+
+    #[test]
+    fn test_render_fit_letterboxes() {
+        // Wide image (8x4) fit into 4x8 — scales to 4x2, centered vertically with 3px
+        // letterbox on top and bottom
+        let img = make_image(8, 4, [0xFF, 0x00, 0x00, 0xFF]); // red
+        let mut canvas = make_canvas(4, 8);
+        fill_solid(&mut canvas, 0, 0, 0);
+        render_fit(&mut canvas, 4, 8, &img);
+
+        // Top row should still be the fill color (letterboxed)
+        assert_eq!(
+            read_pixel(&canvas, 4, 0, 0),
+            [0x00, 0x00, 0x00, 0xFF],
+            "top-left should be letterbox"
+        );
+        // Bottom row should still be fill color
+        assert_eq!(
+            read_pixel(&canvas, 4, 0, 7),
+            [0x00, 0x00, 0x00, 0xFF],
+            "bottom-left should be letterbox"
+        );
+
+        // The middle rows should have image content (not black)
+        let mid = read_pixel(&canvas, 4, 2, 4);
+        assert_ne!(mid, [0x00, 0x00, 0x00, 0xFF], "center should have image content");
+    }
+
+    // ---- render_wallpaper dispatch ----
+
+    #[test]
+    fn test_render_wallpaper_dispatches_all_modes() {
+        // Ensure render_wallpaper doesn't panic for any mode
+        let img = make_image(4, 4, [0xFF, 0x00, 0x00, 0xFF]);
+        for mode in [
+            WallMode::Fill,
+            WallMode::Fit,
+            WallMode::Stretch,
+            WallMode::Center,
+            WallMode::Tile,
+        ] {
+            let mut canvas = make_canvas(8, 8);
+            render_wallpaper(&mut canvas, 8, 8, &img, &mode);
+        }
+    }
 }

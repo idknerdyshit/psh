@@ -58,6 +58,9 @@ pub enum BarPosition {
 pub struct NotifyConfig {
     pub max_visible: u32,
     pub default_timeout_ms: u64,
+    pub width: u32,
+    pub gap: u32,
+    pub icon_size: u32,
 }
 
 impl Default for NotifyConfig {
@@ -65,6 +68,9 @@ impl Default for NotifyConfig {
         Self {
             max_visible: 5,
             default_timeout_ms: 5000,
+            width: 380,
+            gap: 10,
+            icon_size: 48,
         }
     }
 }
@@ -131,6 +137,15 @@ impl Default for ClipConfig {
     }
 }
 
+/// Expands a leading `~` in a path to the user's home directory.
+/// Returns the path unchanged if it doesn't start with `~` or if `$HOME` is not set.
+pub fn expand_tilde(path: &Path) -> PathBuf {
+    if let (Ok(stripped), Ok(home)) = (path.strip_prefix("~"), std::env::var("HOME")) {
+        return PathBuf::from(home).join(stripped);
+    }
+    path.to_owned()
+}
+
 /// Returns the path to `$XDG_CONFIG_HOME/psh/psh.toml`.
 pub fn config_path() -> PathBuf {
     directories::BaseDirs::new()
@@ -151,10 +166,18 @@ pub fn load_from(path: &Path) -> Result<PshConfig> {
     }
 
     let contents = std::fs::read_to_string(path).map_err(PshError::Io)?;
-    toml::from_str(&contents).map_err(|source| PshError::ConfigParse {
-        path: path.to_owned(),
-        source,
-    })
+    let mut config: PshConfig =
+        toml::from_str(&contents).map_err(|source| PshError::ConfigParse {
+            path: path.to_owned(),
+            source,
+        })?;
+
+    // Expand tilde in paths that users are likely to write with ~/
+    if let Some(ref p) = config.wall.path {
+        config.wall.path = Some(expand_tilde(p));
+    }
+
+    Ok(config)
 }
 
 /// Watch the config file for changes, sending notifications on the returned channel.
@@ -218,6 +241,19 @@ mod tests {
         assert!(config.wall.path.is_some());
         assert!(matches!(config.wall.mode, WallMode::Fit));
         assert!(matches!(config.bar.position, BarPosition::Bottom));
+    }
+
+    #[test]
+    fn expand_tilde_expands_home() {
+        let home = std::env::var("HOME").unwrap();
+        let result = expand_tilde(Path::new("~/wallpaper.png"));
+        assert_eq!(result, PathBuf::from(home).join("wallpaper.png"));
+    }
+
+    #[test]
+    fn expand_tilde_leaves_absolute_unchanged() {
+        let path = Path::new("/usr/share/wallpaper.png");
+        assert_eq!(expand_tilde(path), path);
     }
 
     #[test]
