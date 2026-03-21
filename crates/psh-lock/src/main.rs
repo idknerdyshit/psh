@@ -1,208 +1,128 @@
-#![allow(dead_code, unused_imports)]
+//! psh-lock — screen locker for the psh desktop environment.
+//!
+//! A security-critical Wayland client using ext-session-lock-v1 to prevent
+//! input from reaching underlying surfaces while locked. Renders a password
+//! entry UI with tiny-skia and authenticates via PAM.
+
+mod pam;
+mod render;
+mod state;
+
+use smithay_client_toolkit::{
+    compositor::CompositorState,
+    output::OutputState,
+    reexports::{
+        calloop::EventLoop,
+        calloop_wayland_source::WaylandSource,
+    },
+    registry::RegistryState,
+    seat::{keyboard::Modifiers, SeatState},
+    session_lock::SessionLockState,
+    shm::Shm,
+};
+use wayland_client::{globals::registry_queue_init, Connection};
 
 use psh_core::config;
-use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_output, delegate_registry, delegate_shm,
-    output::{OutputHandler, OutputState},
-    registry::{ProvidesRegistryState, RegistryState},
-    registry_handlers,
-    shm::{
-        slot::SlotPool,
-        Shm, ShmHandler,
-    },
-};
-use wayland_client::{
-    globals::registry_queue_init,
-    protocol::{wl_output, wl_shm, wl_surface},
-    Connection, QueueHandle,
-};
+
+use crate::pam::PamResult;
+use crate::render::RenderState;
+use crate::state::{AuthState, LockState, get_username};
 
 fn main() {
     psh_core::logging::init("psh_lock");
     tracing::info!("starting psh-lock");
 
-    let _cfg = config::load().expect("failed to load config");
+    // Ignore SIGTERM/SIGINT while locked — the screen locker should only
+    // be unlocked by successful authentication. SIGKILL cannot be caught.
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        libc::signal(libc::SIGINT, libc::SIG_IGN);
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    }
 
+    let cfg = config::load().expect("failed to load config");
+    let lock_cfg = cfg.lock;
+
+    let username = get_username();
+    tracing::info!("locking session for user: {username}");
+
+    // Connect to Wayland.
     let conn = Connection::connect_to_env().expect("failed to connect to wayland");
-    let (globals, mut event_queue) = registry_queue_init(&conn).expect("failed to init registry");
+    let (globals, event_queue) =
+        registry_queue_init(&conn).expect("failed to init registry");
     let qh = event_queue.handle();
 
-    let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor not available");
+    // Bind globals.
+    let compositor =
+        CompositorState::bind(&globals, &qh).expect("wl_compositor not available");
     let shm = Shm::bind(&globals, &qh).expect("wl_shm not available");
+    let session_lock_state = SessionLockState::new(&globals, &qh);
 
-    // TODO: Bind ext-session-lock-v1 protocol
-    // For now, create a basic surface for password entry
-    let surface = compositor.create_surface(&qh);
-    let pool = SlotPool::new(256 * 256 * 4, &shm).expect("failed to create shm pool");
+    // Set up calloop event loop.
+    let mut event_loop: EventLoop<LockState> =
+        EventLoop::try_new().expect("failed to create event loop");
+    let loop_handle = event_loop.handle();
 
+    // PAM result channel.
+    let (pam_sender, pam_channel) =
+        smithay_client_toolkit::reexports::calloop::channel::channel::<PamResult>();
+
+    // Insert PAM channel into event loop.
+    loop_handle
+        .insert_source(pam_channel, |event, _, state| {
+            if let smithay_client_toolkit::reexports::calloop::channel::Event::Msg(result) = event {
+                state.handle_pam_result(result);
+            }
+        })
+        .expect("failed to insert PAM channel");
+
+    // Insert Wayland source.
+    WaylandSource::new(conn.clone(), event_queue)
+        .insert(loop_handle.clone())
+        .expect("failed to insert wayland source");
+
+    // Build state.
     let mut state = LockState {
         registry: RegistryState::new(&globals),
         output: OutputState::new(&globals, &qh),
+        compositor,
+        seat: SeatState::new(&globals, &qh),
         shm,
-        pool,
-        surface,
+        session_lock_state,
+        session_lock: None,
+        lock_surfaces: Vec::new(),
+        keyboard: None,
+        modifiers: Modifiers::default(),
         password: String::new(),
-        locked: false,
+        auth_state: AuthState::Idle,
+        config: lock_cfg,
+        username,
+        render_state: RenderState::new(),
+        conn: conn.clone(),
+        loop_handle,
+        pam_sender,
+        qh: qh.clone(),
+        running: true,
     };
 
-    tracing::info!("lock screen active");
+    // Request the session lock.
+    state.session_lock = Some(
+        state
+            .session_lock_state
+            .lock(&qh)
+            .expect("ext-session-lock-v1 not supported by compositor"),
+    );
 
-    loop {
-        event_queue
-            .blocking_dispatch(&mut state)
-            .expect("wayland dispatch failed");
+    tracing::info!("lock requested, entering event loop");
+
+    // Main event loop.
+    while state.running {
+        event_loop
+            .dispatch(std::time::Duration::from_millis(16), &mut state)
+            .expect("event loop dispatch failed");
     }
+
+    // Clean shutdown.
+    state.lock_surfaces.clear();
+    tracing::info!("psh-lock exiting");
 }
-
-struct LockState {
-    registry: RegistryState,
-    output: OutputState,
-    shm: Shm,
-    pool: SlotPool,
-    surface: wl_surface::WlSurface,
-    password: String,
-    locked: bool,
-}
-
-impl LockState {
-    fn draw(&mut self, _qh: &QueueHandle<Self>) {
-        // TODO: Render password entry UI using tiny-skia
-        // Will draw centered password dots and clock
-    }
-
-    fn try_authenticate(&self) -> bool {
-        // PAM authentication — runs on a dedicated thread to avoid blocking Wayland
-        let password = self.password.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        std::thread::spawn(move || {
-            let result = authenticate_pam(&password);
-            let _ = tx.send(result);
-        });
-
-        rx.recv().unwrap_or(false)
-    }
-}
-
-fn authenticate_pam(password: &str) -> bool {
-    use pam_client::{Context, Flag};
-
-    let mut context = match Context::new("psh-lock", None, pam_client::conv_null::Conversation::new()) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            tracing::error!("PAM context creation failed: {e}");
-            return false;
-        }
-    };
-
-    // In a real implementation, we'd use a custom conversation function
-    // that provides the password. For now, this is a placeholder.
-    let _ = password;
-
-    match context.authenticate(Flag::NONE) {
-        Ok(()) => {
-            tracing::info!("PAM authentication succeeded");
-            true
-        }
-        Err(e) => {
-            tracing::warn!("PAM authentication failed: {e}");
-            false
-        }
-    }
-}
-
-impl CompositorHandler for LockState {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
-    ) {
-    }
-
-    fn transform_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wl_output::Transform,
-    ) {
-    }
-
-    fn frame(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _time: u32,
-    ) {
-    }
-
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
-
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
-}
-
-impl OutputHandler for LockState {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output
-    }
-
-    fn new_output(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-    }
-
-    fn update_output(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-    }
-
-    fn output_destroyed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-    }
-}
-
-impl ShmHandler for LockState {
-    fn shm_state(&mut self) -> &mut Shm {
-        &mut self.shm
-    }
-}
-
-impl ProvidesRegistryState for LockState {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry
-    }
-    registry_handlers![OutputState];
-}
-
-delegate_compositor!(LockState);
-delegate_output!(LockState);
-delegate_shm!(LockState);
-delegate_registry!(LockState);

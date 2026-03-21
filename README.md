@@ -2,7 +2,7 @@
 
 A Wayland desktop environment component suite, written in Rust. Designed for use with [niri](https://github.com/YaLTeR/niri) and other wlroots-based compositors.
 
-psh provides the essential desktop shell utilities -- bar, notifications, app launcher, clipboard manager, wallpaper, screen lock, and polkit agent -- as independent processes that communicate over a shared IPC socket.
+psh provides the essential desktop shell utilities -- bar, notifications, app launcher, clipboard manager, wallpaper, screen lock, idle monitor, and polkit agent -- as independent processes that communicate over a shared IPC socket.
 
 ## Components
 
@@ -15,7 +15,8 @@ psh provides the essential desktop shell utilities -- bar, notifications, app la
 | **psh-launch** | Application launcher with fuzzy search | GTK4 + layer-shell + nucleo |
 | **psh-clip** | Clipboard history manager | GTK4 + layer-shell + wayland-client |
 | **psh-wall** | Wallpaper manager | smithay-client-toolkit |
-| **psh-lock** | Screen locker | smithay-client-toolkit + PAM |
+| **psh-lock** | Screen locker (ext-session-lock-v1) | smithay-client-toolkit + PAM + tiny-skia |
+| **psh-idle** | Idle monitor and sleep hook | wayland-protocols + zbus |
 
 ## Building
 
@@ -23,6 +24,13 @@ Requires Rust (edition 2024), GTK4 development libraries, and Wayland developmen
 
 ```sh
 cargo build --workspace
+```
+
+## Testing
+
+```sh
+cargo test --workspace   # 151 unit tests
+cargo clippy --workspace # lint check
 ```
 
 ## Configuration
@@ -57,7 +65,17 @@ systemctl --user enable --now psh.target
 
 ## Status
 
-This project is under active development. psh-core, psh-wall, psh-notify, psh-polkit, psh-launch, and psh-clip are feature-complete. psh-bar and psh-lock are functional scaffolds. See [PLAN.md](PLAN.md) for the detailed roadmap.
+All components are feature-complete. See [PLAN.md](PLAN.md) for the detailed history.
+
+- **psh-core**: Config, IPC, theming, D-Bus, logging (13 tests)
+- **psh-bar**: 10 modules, IPC hub, configurable layout (40 tests)
+- **psh-notify**: Full fd.o Notifications spec (14 tests)
+- **psh-polkit**: Full polkit agent with security hardening (12 tests)
+- **psh-launch**: Fuzzy search, frecency, terminal apps (17 tests)
+- **psh-clip**: Clipboard monitoring, persistence, image support (39 tests)
+- **psh-wall**: Multi-output wallpaper with 5 modes
+- **psh-lock**: ext-session-lock-v1, PAM, tiny-skia rendering (16 tests)
+- **psh-idle**: Idle timeout + logind sleep detection
 
 ## License
 

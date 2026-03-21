@@ -8,8 +8,8 @@ CRATES=""
 inherit cargo systemd
 
 DESCRIPTION="Notification daemon for the psh Wayland desktop environment"
-HOMEPAGE="https://github.com/psh-de/psh"
-SRC_URI="https://github.com/psh-de/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz"
+HOMEPAGE="https://github.com/idknerdyshit/psh"
+SRC_URI="https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz"
 
 S="${WORKDIR}/psh-${PV}"
 
@@ -22,7 +22,14 @@ DEPEND="
 	gui-libs/gtk4-layer-shell
 	sys-apps/dbus
 "
-RDEPEND="${DEPEND}"
+# psh-notify claims org.freedesktop.Notifications on D-Bus.
+# Only one notification daemon can own this name at a time.
+RDEPEND="
+	${DEPEND}
+	!!x11-misc/dunst
+	!!gui-apps/mako
+"
+PDEPEND="virtual/notification-daemon"
 BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-notify"

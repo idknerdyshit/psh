@@ -18,6 +18,7 @@ pub struct PshConfig {
     pub launch: LaunchConfig,
     pub wall: WallConfig,
     pub lock: LockConfig,
+    pub idle: IdleConfig,
     pub clip: ClipConfig,
 }
 
@@ -127,15 +128,71 @@ pub enum WallMode {
     Tile,
 }
 
+/// Configuration for the screen locker.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LockConfig {
+    /// Show a clock on the lock screen.
     pub show_clock: bool,
+    /// Clock format string (strftime syntax).
+    pub clock_format: String,
+    /// Date format string (strftime syntax).
+    pub date_format: String,
+    /// Show the current username on the lock screen.
+    pub show_username: bool,
+    /// Background color as a hex string (e.g. "#1e1e2e").
+    pub background_color: String,
+    /// Optional path to a background image.
+    pub background_image: Option<String>,
+    /// Base font size in pixels.
+    pub font_size: f32,
+    /// Color for password indicator dots as a hex string.
+    pub password_dot_color: String,
+    /// Color for error messages as a hex string.
+    pub error_color: String,
+    /// Auto-cancel timeout in seconds (0 = disabled).
+    pub timeout_secs: u64,
+    /// Placeholder for future blur support.
+    pub blur_background: bool,
 }
 
 impl Default for LockConfig {
     fn default() -> Self {
-        Self { show_clock: true }
+        Self {
+            show_clock: true,
+            clock_format: "%H:%M".into(),
+            date_format: "%A, %B %d".into(),
+            show_username: true,
+            background_color: "#1e1e2e".into(),
+            background_image: None,
+            font_size: 24.0,
+            password_dot_color: "#cdd6f4".into(),
+            error_color: "#f38ba8".into(),
+            timeout_secs: 0,
+            blur_background: false,
+        }
+    }
+}
+
+/// Configuration for the idle monitor daemon.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct IdleConfig {
+    /// Idle timeout in seconds before locking (0 = disabled).
+    pub idle_timeout_secs: u64,
+    /// Lock the screen on system sleep/suspend.
+    pub lock_on_sleep: bool,
+    /// Command to run to lock the screen.
+    pub lock_command: String,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            idle_timeout_secs: 300,
+            lock_on_sleep: true,
+            lock_command: "psh-lock".into(),
+        }
     }
 }
 
@@ -314,5 +371,61 @@ mod tests {
         assert_eq!(config.bar.modules_left, vec!["workspaces"]);
         assert_eq!(config.bar.modules_center, vec!["clock"]);
         assert_eq!(config.bar.modules_right, vec!["battery", "volume"]);
+    }
+
+    #[test]
+    fn lock_config_defaults() {
+        let config: PshConfig = toml::from_str("").unwrap();
+        assert!(config.lock.show_clock);
+        assert_eq!(config.lock.clock_format, "%H:%M");
+        assert_eq!(config.lock.date_format, "%A, %B %d");
+        assert!(config.lock.show_username);
+        assert_eq!(config.lock.background_color, "#1e1e2e");
+        assert!(config.lock.background_image.is_none());
+        assert_eq!(config.lock.font_size, 24.0);
+        assert_eq!(config.lock.password_dot_color, "#cdd6f4");
+        assert_eq!(config.lock.error_color, "#f38ba8");
+        assert_eq!(config.lock.timeout_secs, 0);
+        assert!(!config.lock.blur_background);
+    }
+
+    #[test]
+    fn lock_config_parses() {
+        let toml = r##"
+            [lock]
+            show_clock = false
+            clock_format = "%I:%M %p"
+            background_color = "#000000"
+            font_size = 32.0
+            timeout_secs = 30
+        "##;
+        let config: PshConfig = toml::from_str(toml).unwrap();
+        assert!(!config.lock.show_clock);
+        assert_eq!(config.lock.clock_format, "%I:%M %p");
+        assert_eq!(config.lock.background_color, "#000000");
+        assert_eq!(config.lock.font_size, 32.0);
+        assert_eq!(config.lock.timeout_secs, 30);
+    }
+
+    #[test]
+    fn idle_config_defaults() {
+        let config: PshConfig = toml::from_str("").unwrap();
+        assert_eq!(config.idle.idle_timeout_secs, 300);
+        assert!(config.idle.lock_on_sleep);
+        assert_eq!(config.idle.lock_command, "psh-lock");
+    }
+
+    #[test]
+    fn idle_config_parses() {
+        let toml = r#"
+            [idle]
+            idle_timeout_secs = 600
+            lock_on_sleep = false
+            lock_command = "swaylock"
+        "#;
+        let config: PshConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.idle.idle_timeout_secs, 600);
+        assert!(!config.idle.lock_on_sleep);
+        assert_eq!(config.idle.lock_command, "swaylock");
     }
 }

@@ -1,22 +1,21 @@
 [package]
-name = "psh-lock"
+name = "psh-idle"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "psh-lock"
+name = "psh-idle"
 path = "src/main.rs"
 
 [dependencies]
 psh-core = { workspace = true }
+wayland-client = { workspace = true }
+wayland-protocols = { workspace = true }
 smithay-client-toolkit = { workspace = true }
+zbus = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-pam-client = { workspace = true }
-tiny-skia = { workspace = true }
-wayland-client = { workspace = true }
 signal-hook = { workspace = true }
-zeroize = { workspace = true }
-libc = { workspace = true }
-ab_glyph = { workspace = true }
+futures-util = { workspace = true }
+shlex = { workspace = true }

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<longdescription>
+		Clipboard manager for the psh Wayland desktop environment.
+		Monitors the clipboard via zwlr-data-control-v1 with persistent
+		history and a GTK4 picker UI.
+	</longdescription>
+	<upstream>
+		<remote-id type="github">idknerdyshit/psh</remote-id>
+	</upstream>
+</pkgmetadata>

@@ -6,14 +6,15 @@ Status legend: **done** = working, **partial** = compiles but incomplete, **stub
 
 | Crate | Status | What works | What's missing |
 |---|---|---|---|
-| psh-core | **done** | Config parsing + hot-reload, IPC protocol, theme loading, D-Bus helpers, error types, logging. 8 tests. | — |
+| psh-core | **done** | Config parsing + hot-reload, IPC protocol, theme loading, D-Bus helpers, error types, logging. 13 tests. | — |
 | psh-wall | **done** | Multi-output layer surfaces, all wallpaper modes (fill/fit/center/stretch/tile), HiDPI scale factor, output hotplug, IPC `SetWallpaper` listener, calloop event loop, SIGTERM shutdown | — |
 | psh-notify | **done** | Full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons with `ActionInvoked` signal, `NotificationClosed` signal, replace-id, app icons (name + image-data hint), markup sanitization, `NotificationCount` IPC broadcast, `max_visible` enforcement, configurable timeouts | — |
 | psh-polkit | **done** | Full polkit auth agent: authority registration, session detection, per-session concurrent auth with `SessionGuard`, password verification via `polkit-agent-helper-1`, `AuthenticationAgentResponse2`, NSS username resolution (`getpwuid_r`), password zeroization, Escape key + 120s timeout, error feedback on wrong password, 12 unit tests | Config fields, IPC integration with psh-bar |
 | psh-launch | **done** | Long-lived daemon with IPC toggle, .desktop file parsing, fuzzy search with nucleo, GTK4 overlay, icon display (GTK4 icon theme), terminal app support, frecency sorting (persistent JSON), Enter/Escape/arrow key navigation, single-instance via GTK Application, desktop entry refresh on show | — |
 | psh-clip | **done** | Clipboard monitoring (`zwlr-data-control-v1`), `ClipEntry` (text + image), persistent history (`$XDG_DATA_HOME/psh/clip_history.json`), image caching (`$XDG_CACHE_HOME/psh/clips/`), GTK4 picker with search/filter, paste-on-select via data-control source, image thumbnails, self-copy detection, orphan image pruning, 39 tests | — |
 | psh-bar | **done** | BarModule trait + dynamic loading, bidirectional IPC hub, 10 modules (clock, battery, workspaces/niri, window_title/niri, volume/wpctl, network/NM D-Bus, tray/SNI, launcher btn, clipboard btn, notification count), configurable module layout, 35 tests | ext-workspace-v1 fallback (stub), ext-foreign-toplevel fallback (stub), wifi signal strength, tray DBusMenu right-click menus |
-| psh-lock | **stub** | Wayland surface + SCTK boilerplate, PAM function signature | ext-session-lock-v1 binding, keyboard input handling, tiny-skia password entry rendering, actual PAM conversation, multi-output lock surfaces, idle/DPMS integration |
+| psh-lock | **done** | ext-session-lock-v1, calloop event loop, SCTK keyboard input, tiny-skia + ab_glyph rendering (clock, date, username, password dots, error messages), PAM auth on dedicated thread, multi-output lock surfaces with hotplug, password zeroization, signal ignoring, 16 tests | — |
+| psh-idle | **done** | ext-idle-notify-v1 idle detection, logind PrepareForSleep sleep hook, spawns psh-lock, process management, calloop event loop, SIGTERM shutdown | — |
 
 ## Phases
 
@@ -91,15 +92,15 @@ Biggest component. Depends on stable IPC + other components.
 ### Phase 7 — Make psh-lock security-complete
 Built last. Security-critical — must be correct.
 
-- [ ] Bind `ext-session-lock-v1` protocol — acquire lock, get lock surfaces for all outputs
-- [ ] Keyboard input handling via `wl_keyboard` — accumulate password characters
-- [ ] Render password UI with tiny-skia — centered input field with dots, clock, user info
-- [ ] PAM conversation function — supply password from keyboard input to PAM
-- [ ] On successful auth, destroy lock and exit
-- [ ] On failed auth, show error, clear password, allow retry
-- [ ] Multi-output — render lock surface on every output, handle hotplug
-- [ ] Grace period / idle integration — optional `swayidle`/`hypridle` compatibility
-- [ ] Ensure no input leaks through to underlying surfaces while locked
+- [x] Bind `ext-session-lock-v1` protocol — acquire lock, get lock surfaces for all outputs
+- [x] Keyboard input handling via `wl_keyboard` — accumulate password characters
+- [x] Render password UI with tiny-skia + ab_glyph — centered input field with dots, clock, date, user info
+- [x] PAM conversation function — supply password from keyboard input to PAM via conv_mock
+- [x] On successful auth, destroy lock and exit
+- [x] On failed auth, show error, clear password, allow retry
+- [x] Multi-output — render lock surface on every output, handle hotplug
+- [x] Idle integration — separate `psh-idle` binary with ext-idle-notify-v1 + logind PrepareForSleep
+- [x] Ensure no input leaks through to underlying surfaces while locked (ext-session-lock-v1 guarantee + SIGTERM ignored)
 
 ### Phase 8 — Polish and integration
 

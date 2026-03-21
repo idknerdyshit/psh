@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<longdescription>
+		Meta-package for the psh Wayland desktop environment. Installs all
+		components, the systemd target, shared themes, and example config.
+	</longdescription>
+	<upstream>
+		<remote-id type="github">idknerdyshit/psh</remote-id>
+	</upstream>
+</pkgmetadata>

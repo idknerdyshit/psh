@@ -2,7 +2,7 @@
 
 ## Project overview
 
-A monorepo Rust workspace producing 7 binaries + 1 shared library. All components target Wayland compositors (primarily niri) using layer-shell for UI placement.
+A monorepo Rust workspace producing 8 binaries + 1 shared library. All components target Wayland compositors (primarily niri) using layer-shell for UI placement.
 
 ## Build
 
@@ -21,7 +21,8 @@ cargo clippy --workspace
 - **psh-launch** — app launcher (GTK4 + layer-shell + nucleo fuzzy search)
 - **psh-clip** — clipboard manager (GTK4 + layer-shell)
 - **psh-wall** — wallpaper manager (smithay-client-toolkit, no GTK)
-- **psh-lock** — screen locker (smithay-client-toolkit, no GTK)
+- **psh-lock** — screen locker (smithay-client-toolkit + ext-session-lock-v1, no GTK)
+- **psh-idle** — idle monitor daemon (ext-idle-notify-v1 + logind sleep hook, no GTK)
 
 ## Key patterns
 
@@ -64,6 +65,7 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 - Unit tests in psh-core for config parsing and IPC serialization (`cargo test -p psh-core`)
 - Unit tests in psh-bar for module registry, battery parsing, volume parsing, network state formatting, title truncation, niri event parsing (`cargo test -p psh-bar`)
 - Unit tests in psh-clip for clipboard history, persistence, and monitor helpers (`cargo test -p psh-clip`)
+- Unit tests in psh-lock for color parsing, rendering (all auth states), dot layout, BGRA conversion, time formatting, username resolution (`cargo test -p psh-lock`)
 - Unit tests in psh-polkit for identity extraction, username resolution, session detection, session guard cleanup, and dispatcher routing (`cargo test -p psh-polkit -- --test-threads=1`)
 - Integration testing is manual: run component on a Wayland session and exercise it
 - Test notifications with: `notify-send "title" "body"`
@@ -72,10 +74,11 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 ## Implementation status
 
 See `PLAN.md` for per-phase breakdown.
-- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit, psh-launch, psh-clip, psh-bar
+- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit, psh-launch, psh-clip, psh-bar, psh-lock, psh-idle
 - **psh-notify** — full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons, signals, replace-id, icons, markup sanitization, IPC count broadcast.
 - **psh-polkit** — full polkit auth agent: authority registration, session detection, per-session concurrent auth, password verification via polkit-agent-helper-1, NSS username resolution, password zeroization, Escape key + 120s timeout, 12 unit tests.
 - **psh-launch** — long-lived daemon with IPC toggle, .desktop parsing, nucleo fuzzy search, GTK4 icon display, terminal app support, frecency sorting (persistent JSON), Enter/Escape keyboard nav, single-instance, desktop entry refresh on show, 4 unit tests.
 - **psh-clip** — clipboard manager daemon: `zwlr-data-control-v1` monitoring via independent Wayland connection, `ClipEntry` (text + image), persistent history at `$XDG_DATA_HOME/psh/clip_history.json`, image caching at `$XDG_CACHE_HOME/psh/clips/`, GTK4 picker with search/filter, paste-on-select via data-control source, image thumbnails, self-copy detection, 39 unit tests.
 - **psh-bar** — full status bar and IPC hub: `BarModule` trait with dynamic loading, bidirectional IPC bridge, 10 modules (clock, battery, workspaces/niri IPC, window title/niri IPC, volume/wpctl, network/NM D-Bus, tray/SNI, launcher btn, clipboard btn, notification count), configurable module layout with sensible defaults, 35 unit tests.
-- **Partial scaffold:** psh-lock — compiles and has basic structure but needs significant feature work.
+- **psh-lock** — full screen locker: ext-session-lock-v1 protocol, calloop event loop, SCTK keyboard input (Enter/Escape/Backspace/Ctrl+U), tiny-skia + ab_glyph rendering (clock, date, username, password dots, error messages), PAM auth on dedicated thread via conv_mock, multi-output lock surfaces with hotplug, password zeroization, signal ignoring, 16 unit tests.
+- **psh-idle** — idle monitor daemon: ext-idle-notify-v1 idle detection, logind PrepareForSleep sleep hook via zbus, spawns psh-lock, process tracking, calloop event loop, SIGTERM shutdown.

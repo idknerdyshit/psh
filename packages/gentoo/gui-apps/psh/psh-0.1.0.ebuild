@@ -4,8 +4,8 @@
 EAPI=8
 
 DESCRIPTION="psh Wayland desktop environment (meta-package)"
-HOMEPAGE="https://github.com/psh-de/psh"
-SRC_URI="https://github.com/psh-de/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz"
+HOMEPAGE="https://github.com/idknerdyshit/psh"
+SRC_URI="https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz"
 
 S="${WORKDIR}/psh-${PV}"
 
@@ -22,6 +22,7 @@ RDEPEND="
 	=gui-apps/psh-wall-${PV}
 	=gui-apps/psh-lock-${PV}
 "
+PDEPEND="virtual/notification-daemon"
 
 src_install() {
 	# Install the systemd target that ties all components together

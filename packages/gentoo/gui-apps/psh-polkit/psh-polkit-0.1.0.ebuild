@@ -8,8 +8,8 @@ CRATES=""
 inherit cargo systemd
 
 DESCRIPTION="Polkit authentication agent for the psh Wayland desktop environment"
-HOMEPAGE="https://github.com/psh-de/psh"
-SRC_URI="https://github.com/psh-de/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz"
+HOMEPAGE="https://github.com/idknerdyshit/psh"
+SRC_URI="https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz"
 
 S="${WORKDIR}/psh-${PV}"
 
@@ -23,7 +23,14 @@ DEPEND="
 	sys-apps/dbus
 	sys-auth/polkit
 "
-RDEPEND="${DEPEND}"
+# psh-polkit registers as the session polkit authentication agent.
+# Only one agent can be registered per session.
+RDEPEND="
+	${DEPEND}
+	!!gnome-extra/polkit-gnome
+	!!kde-plasma/polkit-kde-agent
+	!!lxqt-base/lxqt-policykit
+"
 BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-polkit"

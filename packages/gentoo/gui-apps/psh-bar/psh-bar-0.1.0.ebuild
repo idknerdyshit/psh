@@ -8,8 +8,8 @@ CRATES=""
 inherit cargo systemd
 
 DESCRIPTION="System bar for the psh Wayland desktop environment"
-HOMEPAGE="https://github.com/psh-de/psh"
-SRC_URI="https://github.com/psh-de/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz"
+HOMEPAGE="https://github.com/idknerdyshit/psh"
+SRC_URI="https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz"
 
 S="${WORKDIR}/psh-${PV}"
 

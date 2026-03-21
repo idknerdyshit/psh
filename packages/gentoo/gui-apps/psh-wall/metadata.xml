@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<longdescription>
+		Wallpaper manager for the psh Wayland desktop environment.
+		Uses smithay-client-toolkit for multi-output layer surfaces
+		with fill, fit, center, stretch, and tile modes.
+	</longdescription>
+	<upstream>
+		<remote-id type="github">idknerdyshit/psh</remote-id>
+	</upstream>
+</pkgmetadata>

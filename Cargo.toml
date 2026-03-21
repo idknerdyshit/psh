@@ -9,6 +9,7 @@ members = [
     "crates/psh-wall",
     "crates/psh-lock",
     "crates/psh-clip",
+    "crates/psh-idle",
 ]
 
 [workspace.package]
@@ -48,3 +49,6 @@ zeroize = "1"
 tempfile = "3"
 niri-ipc = "25.11"
 system-tray = "0.8"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+ab_glyph = "0.2"
+shlex = "1"

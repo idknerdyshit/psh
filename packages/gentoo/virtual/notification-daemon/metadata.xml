@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<longdescription>
+		Virtual for the org.freedesktop.Notifications D-Bus service.
+		Adds gui-apps/psh-notify as a provider alongside the standard
+		::gentoo notification daemons.
+	</longdescription>
+</pkgmetadata>

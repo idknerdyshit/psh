@@ -11,12 +11,28 @@ Shared library for the psh desktop environment suite. Every other psh component 
 - **error** -- `PshError` enum with `thiserror` derives and a `Result<T>` alias
 - **logging** -- tracing-subscriber init with `PSH_LOG` env filter
 
+## Config sections
+
+The top-level `PshConfig` struct includes sections for each component:
+
+| Section | Struct | Description |
+|---------|--------|-------------|
+| `[theme]` | `ThemeConfig` | Theme name |
+| `[bar]` | `BarConfig` | Bar position, height, module layout |
+| `[notify]` | `NotifyConfig` | Max visible, timeout, width, icon size |
+| `[polkit]` | `PolkitConfig` | (empty, reserved) |
+| `[launch]` | `LaunchConfig` | Terminal app, max results |
+| `[wall]` | `WallConfig` | Wallpaper path and mode |
+| `[lock]` | `LockConfig` | Clock, colors, font size, background |
+| `[idle]` | `IdleConfig` | Idle timeout, sleep hook, lock command |
+| `[clip]` | `ClipConfig` | History size, persistence, image support |
+
 ## Feature flags
 
 - `default` -- no GTK dependency
 - `gtk` -- enables the `theme` module, pulls in `gtk4`
 
-psh-wall and psh-lock use the default features. All GTK components use `features = ["gtk"]`.
+psh-wall, psh-lock, and psh-idle use the default features. All GTK components use `features = ["gtk"]`.
 
 ## Usage
 
@@ -35,5 +51,5 @@ psh_core::ipc::send(&mut stream, &psh_core::ipc::Message::Ping).await?;
 ## Tests
 
 ```sh
-cargo test -p psh-core
+cargo test -p psh-core  # 13 unit tests
 ```
