@@ -5,65 +5,57 @@ System bar and IPC hub. The central component that other psh components connect 
 ## Stack
 
 - GTK4 + gtk4-layer-shell (bar panel)
-- zbus 5 (for future tray/volume/network modules)
-- tokio (IPC hub runs on background thread)
-- async-channel
+- zbus 5 (tray/network D-Bus)
+- niri-ipc (workspace/window title from niri)
+- system-tray (SNI tray items)
+- tokio (IPC hub + async backends on background threads)
+- async-channel (GTK ↔ tokio communication)
 - psh-core with `gtk` feature
 
 ## How it works
 
-1. GTK4 app starts, applies theme, spawns IPC hub on a background thread
-2. Creates a layer-shell window anchored left+right and top (or bottom per config)
-3. Uses a `CenterBox` with left/center/right module containers
-4. IPC hub binds `$XDG_RUNTIME_DIR/psh.sock`, accepts client connections, handles ping/pong
+1. GTK4 app starts, applies theme
+2. Reads `modules_left/center/right` from config (or uses sensible defaults)
+3. Creates `BarModule` instances via `create_module()` registry
+4. Each module gets a `ModuleContext` with bidirectional IPC channels
+5. Spawns IPC hub on a background tokio thread
+6. IPC hub fans out client messages to all module inbound channels and forwards module outbound messages to all IPC clients
+7. Creates a layer-shell window with CenterBox layout (left/center/right sections)
 
-## Current state — partial
+## Module architecture
 
-**Working:**
-- Layer-shell panel with configurable position (top/bottom) and height
-- CenterBox layout with left/center/right sections
-- IPC hub: bind, accept, per-client task, ping/pong handling
-- Clock module: live-updating `%H:%M:%S` via `glib::timeout_add_seconds_local`
-- Battery module: reads `/sys/class/power_supply/BAT0/capacity` and `status`, updates every 30s
-- Workspaces module: static placeholder buttons 1-5
-
-**Missing (see PLAN.md Phase 6):**
-- Workspace module: niri IPC socket integration, ext-workspace-v1 fallback
-- Window title module
-- Tray module (SNI protocol — consider `system-tray` crate)
-- Volume module (PipeWire/PulseAudio)
-- Network module (NetworkManager D-Bus)
-- IPC message routing (forward messages to connected clients, not just ping/pong)
-- Configurable module loading from `modules_left`/`modules_center`/`modules_right` config
-- `BarModule` trait and dynamic module instantiation
-- Click actions (launcher button, clip button)
-
-## Key files
-
-- `main.rs` — GTK app, layer-shell setup, module wiring, `run_ipc_hub()` async function
-- `modules/mod.rs` — module re-exports
-- `modules/clock.rs` — live clock label
-- `modules/battery.rs` — sysfs battery reader
-- `modules/workspaces.rs` — static placeholder
-
-## Module structure
-
-Each module exposes a `widget() -> gtk4::Widget` function. When implementing the `BarModule` trait, this will become:
-
+Every module implements the `BarModule` trait (`modules/mod.rs`):
 ```rust
-trait BarModule {
-    fn name(&self) -> &str;
-    fn widget(&self) -> gtk4::Widget;
-    async fn start(&self, config: &ModuleConfig) -> Result<()>;
+pub trait BarModule {
+    fn name(&self) -> &'static str;
+    fn widget(&self, ctx: &ModuleContext) -> gtk4::Widget;
 }
 ```
 
+Modules that need async data spawn their own background tasks inside `widget()` using `glib::spawn_future_local` + `async_channel`.
+
+## Available modules
+
+| Name | File | Description |
+|------|------|-------------|
+| `clock` | `modules/clock.rs` | Live-updating `%H:%M:%S` label |
+| `battery` | `modules/battery.rs` | Sysfs battery reader, configurable device |
+| `workspaces` | `modules/workspaces.rs` | Niri IPC workspace buttons (ext-workspace-v1 fallback stub) |
+| `window_title` | `modules/window_title.rs` | Focused window title from niri IPC |
+| `volume` | `modules/volume.rs` | wpctl-based volume display, scroll-to-adjust, click-to-mute |
+| `network` | `modules/network.rs` | NetworkManager D-Bus connection status |
+| `tray` | `modules/tray.rs` | SNI system tray via system-tray crate |
+| `launcher` | `modules/launcher_btn.rs` | Button sending ToggleLauncher IPC |
+| `clipboard` | `modules/clipboard_btn.rs` | Button sending ShowClipboardHistory IPC |
+| `notifications` | `modules/notifications.rs` | Notification count badge from IPC |
+
 ## IPC hub
 
-The hub in `run_ipc_hub()` currently only handles `Ping -> Pong`. When adding message routing:
-- Maintain a `Vec` or `HashMap` of connected client streams
-- On receiving a routable message (e.g. `ToggleLauncher`), forward to all clients
-- Handle client disconnects gracefully (remove from list)
+The hub in `run_ipc_hub()`:
+- Binds `$XDG_RUNTIME_DIR/psh.sock`, accepts client connections
+- Broadcasts routable messages (ToggleLauncher, NotificationCount, etc.) to all clients
+- Fans out incoming client messages to per-module inbound channels
+- Reads from module outbound channel and broadcasts to IPC clients
 
 ## Config
 
@@ -71,7 +63,23 @@ The hub in `run_ipc_hub()` currently only handles `Ping -> Pong`. When adding me
 [bar]
 position = "top"     # top | bottom
 # height = 32
-# modules_left = ["workspaces"]
+# modules_left = ["workspaces", "window_title"]
 # modules_center = ["clock"]
-# modules_right = ["battery"]
+# modules_right = ["volume", "network", "battery", "tray"]
+# show_all_workspaces = false
+# max_title_length = 50
+# volume_step = 5
+# battery_device = "BAT0"
 ```
+
+## Tests
+
+35 unit tests covering:
+- Module registry (create known/unknown, default lists, name consistency)
+- Battery sysfs parsing and icon selection
+- Volume wpctl output parsing
+- Network state formatting, NM type parsing, CSS class mapping
+- Window title truncation (including unicode)
+- Niri IPC event parsing round-trip
+
+Run: `cargo test -p psh-bar`

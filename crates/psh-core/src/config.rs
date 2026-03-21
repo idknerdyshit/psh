@@ -35,14 +35,28 @@ impl Default for ThemeConfig {
     }
 }
 
+/// Configuration for the status bar.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct BarConfig {
+    /// Bar position: top or bottom of the screen.
     pub position: BarPosition,
+    /// Bar height in pixels (default: 32).
     pub height: Option<u32>,
+    /// Module names for the left section.
     pub modules_left: Vec<String>,
+    /// Module names for the center section.
     pub modules_center: Vec<String>,
+    /// Module names for the right section.
     pub modules_right: Vec<String>,
+    /// Show workspaces from all outputs, not just the current one.
+    pub show_all_workspaces: bool,
+    /// Maximum window title length before truncation (default: 50).
+    pub max_title_length: Option<usize>,
+    /// Volume adjustment step per scroll event in percent (default: 5).
+    pub volume_step: Option<u32>,
+    /// Sysfs battery device name (default: "BAT0").
+    pub battery_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -269,5 +283,36 @@ mod tests {
     fn missing_file_returns_defaults() {
         let config = load_from(Path::new("/nonexistent/psh.toml")).unwrap();
         assert_eq!(config.theme.name, "default");
+    }
+
+    #[test]
+    fn bar_config_new_fields_default() {
+        let config: PshConfig = toml::from_str("").unwrap();
+        assert!(!config.bar.show_all_workspaces);
+        assert_eq!(config.bar.max_title_length, None);
+        assert_eq!(config.bar.volume_step, None);
+        assert_eq!(config.bar.battery_device, None);
+    }
+
+    #[test]
+    fn bar_config_new_fields_parse() {
+        let toml = r#"
+            [bar]
+            show_all_workspaces = true
+            max_title_length = 30
+            volume_step = 10
+            battery_device = "BAT1"
+            modules_left = ["workspaces"]
+            modules_center = ["clock"]
+            modules_right = ["battery", "volume"]
+        "#;
+        let config: PshConfig = toml::from_str(toml).unwrap();
+        assert!(config.bar.show_all_workspaces);
+        assert_eq!(config.bar.max_title_length, Some(30));
+        assert_eq!(config.bar.volume_step, Some(10));
+        assert_eq!(config.bar.battery_device.as_deref(), Some("BAT1"));
+        assert_eq!(config.bar.modules_left, vec!["workspaces"]);
+        assert_eq!(config.bar.modules_center, vec!["clock"]);
+        assert_eq!(config.bar.modules_right, vec!["battery", "volume"]);
     }
 }

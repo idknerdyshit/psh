@@ -1,10 +1,16 @@
-#![allow(dead_code, unused_imports)]
+//! psh-bar — System status bar and IPC hub for the psh desktop environment.
+//!
+//! Renders a GTK4 layer-shell panel with configurable modules (workspaces, clock,
+//! battery, volume, network, tray, etc.) and acts as the central IPC message hub
+//! that all other psh components connect to.
 
 mod modules;
+mod niri;
 
 use gtk4::prelude::*;
 use gtk4_layer_shell::LayerShell;
-use psh_core::config::{self, BarPosition};
+use psh_core::config::{self, BarConfig, BarPosition};
+use psh_core::ipc::Message;
 
 fn main() {
     psh_core::logging::init("psh_bar");
@@ -13,6 +19,19 @@ fn main() {
     let cfg = config::load().expect("failed to load config");
     let bar_cfg = cfg.bar.clone();
 
+    // Create shared tokio runtime for all async backends (IPC hub, modules)
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+    let rt_handle = rt.handle().clone();
+
+    // Keep the runtime alive on a background thread
+    std::thread::spawn(move || {
+        rt.block_on(std::future::pending::<()>());
+    });
+
     let app = gtk4::Application::builder()
         .application_id("com.psh.bar")
         .build();
@@ -20,14 +39,34 @@ fn main() {
     app.connect_activate(move |app| {
         psh_core::theme::apply_theme(&cfg.theme.name);
 
-        // Start IPC hub on background thread
-        std::thread::spawn(|| {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                if let Err(e) = run_ipc_hub().await {
-                    tracing::error!("IPC hub error: {e}");
-                }
-            });
+        // Channel: modules -> IPC hub (outbound to clients)
+        let (outbound_tx, outbound_rx) = async_channel::bounded::<Message>(64);
+
+        // Per-module inbound channels: IPC hub -> modules
+        let mut inbound_senders: Vec<async_channel::Sender<Message>> = Vec::new();
+
+        // Build module lists from config or defaults
+        let left_names = module_names(&bar_cfg.modules_left, modules::DEFAULT_LEFT);
+        let center_names = module_names(&bar_cfg.modules_center, modules::DEFAULT_CENTER);
+        let right_names = module_names(&bar_cfg.modules_right, modules::DEFAULT_RIGHT);
+
+        // Build sections
+        let left = build_section(&left_names, &bar_cfg, &outbound_tx, &mut inbound_senders, &rt_handle);
+        left.set_margin_start(8);
+        left.add_css_class("psh-bar-left");
+
+        let center = build_section(&center_names, &bar_cfg, &outbound_tx, &mut inbound_senders, &rt_handle);
+        center.add_css_class("psh-bar-center");
+
+        let right = build_section(&right_names, &bar_cfg, &outbound_tx, &mut inbound_senders, &rt_handle);
+        right.set_margin_end(8);
+        right.add_css_class("psh-bar-right");
+
+        // Spawn IPC hub on the shared runtime
+        rt_handle.spawn(async move {
+            if let Err(e) = run_ipc_hub(outbound_rx, inbound_senders).await {
+                tracing::error!("IPC hub error: {e}");
+            }
         });
 
         let window = gtk4::ApplicationWindow::builder()
@@ -50,25 +89,8 @@ fn main() {
 
         let bar = gtk4::CenterBox::new();
         bar.add_css_class("psh-bar");
-
-        // Left modules
-        let left = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        left.set_margin_start(8);
-        left.add_css_class("psh-bar-left");
-        left.append(&modules::workspaces::widget());
         bar.set_start_widget(Some(&left));
-
-        // Center modules
-        let center = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        center.add_css_class("psh-bar-center");
-        center.append(&modules::clock::widget());
         bar.set_center_widget(Some(&center));
-
-        // Right modules
-        let right = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        right.set_margin_end(8);
-        right.add_css_class("psh-bar-right");
-        right.append(&modules::battery::widget());
         bar.set_end_widget(Some(&right));
 
         window.set_child(Some(&bar));
@@ -78,7 +100,57 @@ fn main() {
     app.run_with_args::<String>(&[]);
 }
 
-async fn run_ipc_hub() -> psh_core::Result<()> {
+/// Resolve module names from config, falling back to defaults if config is empty.
+fn module_names<'a>(configured: &'a [String], defaults: &'a [&'a str]) -> Vec<&'a str> {
+    if configured.is_empty() {
+        defaults.to_vec()
+    } else {
+        configured.iter().map(|s| s.as_str()).collect()
+    }
+}
+
+/// Build a horizontal box of modules for one bar section.
+fn build_section(
+    names: &[&str],
+    config: &BarConfig,
+    outbound_tx: &async_channel::Sender<Message>,
+    inbound_senders: &mut Vec<async_channel::Sender<Message>>,
+    rt: &tokio::runtime::Handle,
+) -> gtk4::Box {
+    let section = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+
+    for name in names {
+        if let Some(module) = modules::create_module(name) {
+            let (tx, rx) = async_channel::bounded::<Message>(16);
+            inbound_senders.push(tx);
+
+            let ctx = modules::ModuleContext {
+                ipc_tx: outbound_tx.clone(),
+                ipc_rx: rx,
+                config: config.clone(),
+                rt: rt.clone(),
+            };
+
+            tracing::debug!("loaded module: {}", module.name());
+            section.append(&module.widget(&ctx));
+        }
+    }
+
+    section
+}
+
+/// Run the IPC hub on the tokio runtime.
+///
+/// The hub:
+/// - Binds the Unix socket and accepts client connections
+/// - Forwards messages from IPC clients to all module inbound channels
+/// - Forwards messages from the outbound channel to all IPC clients
+/// - Proactively removes disconnected clients via a removal channel
+async fn run_ipc_hub(
+    outbound_rx: async_channel::Receiver<Message>,
+    inbound_senders: Vec<async_channel::Sender<Message>>,
+) -> psh_core::Result<()> {
+    use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::net::unix::OwnedWriteHalf;
     use tokio::sync::Mutex;
@@ -86,8 +158,34 @@ async fn run_ipc_hub() -> psh_core::Result<()> {
     let listener = psh_core::ipc::bind().await?;
     tracing::info!("IPC hub listening");
 
-    let clients: Arc<Mutex<Vec<OwnedWriteHalf>>> = Arc::new(Mutex::new(Vec::new()));
+    let clients: Arc<Mutex<HashMap<u64, OwnedWriteHalf>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let mut next_id: u64 = 0;
 
+    // Channel for read tasks to signal client disconnection
+    let (remove_tx, mut remove_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+
+    // Task: process removal signals from read tasks
+    let clients_for_removal = clients.clone();
+    tokio::spawn(async move {
+        while let Some(id) = remove_rx.recv().await {
+            let mut cl = clients_for_removal.lock().await;
+            if cl.remove(&id).is_some() {
+                tracing::debug!("removed disconnected client {id}, remaining: {}", cl.len());
+            }
+        }
+    });
+
+    // Task: forward module outbound messages to all IPC clients
+    let clients_for_outbound = clients.clone();
+    tokio::spawn(async move {
+        while let Ok(msg) = outbound_rx.recv().await {
+            tracing::debug!("hub outbound: {msg:?}");
+            broadcast(&clients_for_outbound, &msg).await;
+        }
+    });
+
+    // Accept loop: handle incoming client connections
     loop {
         let (stream, _) = listener
             .accept()
@@ -95,53 +193,64 @@ async fn run_ipc_hub() -> psh_core::Result<()> {
             .map_err(|e| psh_core::PshError::Ipc(e.to_string()))?;
 
         let (mut read_half, write_half) = stream.into_split();
+        let client_id = next_id;
+        next_id += 1;
 
         {
             let mut cl = clients.lock().await;
-            cl.push(write_half);
-            tracing::debug!("client connected, total: {}", cl.len());
+            cl.insert(client_id, write_half);
+            tracing::debug!("client {client_id} connected, total: {}", cl.len());
         }
 
         let clients_clone = clients.clone();
+        let inbound_senders = inbound_senders.clone();
+        let remove_tx = remove_tx.clone();
         tokio::spawn(async move {
             while let Ok(msg) = psh_core::ipc::recv_from(&mut read_half).await {
-                tracing::debug!("hub received: {msg:?}");
-                match &msg {
-                    psh_core::ipc::Message::Ping => {
-                        // Pong is a direct reply, not broadcast. We need the
-                        // write half for this client, but it's in the shared vec.
-                        // For now, broadcast Pong — the client will ignore extra messages.
-                        broadcast(&clients_clone, &psh_core::ipc::Message::Pong).await;
+                tracing::debug!("hub received from client {client_id}: {msg:?}");
+
+                // Fan out to module inbound channels
+                for tx in &inbound_senders {
+                    if tx.send(msg.clone()).await.is_err() {
+                        tracing::debug!("module inbound channel closed");
                     }
-                    psh_core::ipc::Message::NotificationCount { .. }
-                    | psh_core::ipc::Message::ToggleLauncher
-                    | psh_core::ipc::Message::ShowClipboardHistory
-                    | psh_core::ipc::Message::ConfigReloaded
-                    | psh_core::ipc::Message::SetWallpaper { .. }
-                    | psh_core::ipc::Message::LockScreen => {
+                }
+
+                match &msg {
+                    Message::Ping => {
+                        broadcast(&clients_clone, &Message::Pong).await;
+                    }
+                    Message::NotificationCount { .. }
+                    | Message::ToggleLauncher
+                    | Message::ShowClipboardHistory
+                    | Message::ConfigReloaded
+                    | Message::SetWallpaper { .. }
+                    | Message::LockScreen => {
                         broadcast(&clients_clone, &msg).await;
                     }
                     _ => {}
                 }
             }
-            tracing::debug!("client disconnected");
+            tracing::debug!("client {client_id} disconnected");
+            let _ = remove_tx.send(client_id);
         });
     }
 }
 
-/// Send a message to all connected clients, removing any that have disconnected.
+/// Send a message to all connected clients, removing any that fail to write.
 async fn broadcast(
-    clients: &tokio::sync::Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>,
-    msg: &psh_core::ipc::Message,
+    clients: &tokio::sync::Mutex<std::collections::HashMap<u64, tokio::net::unix::OwnedWriteHalf>>,
+    msg: &Message,
 ) {
     let mut cl = clients.lock().await;
-    let mut i = 0;
-    while i < cl.len() {
-        if psh_core::ipc::send_to(&mut cl[i], msg).await.is_err() {
-            tracing::debug!("removing disconnected client");
-            cl.swap_remove(i);
-        } else {
-            i += 1;
+    let mut failed: Vec<u64> = Vec::new();
+    for (id, writer) in cl.iter_mut() {
+        if psh_core::ipc::send_to(writer, msg).await.is_err() {
+            failed.push(*id);
         }
+    }
+    for id in failed {
+        tracing::debug!("removing client {id} after write failure");
+        cl.remove(&id);
     }
 }

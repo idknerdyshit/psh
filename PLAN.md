@@ -12,7 +12,7 @@ Status legend: **done** = working, **partial** = compiles but incomplete, **stub
 | psh-polkit | **done** | Full polkit auth agent: authority registration, session detection, per-session concurrent auth with `SessionGuard`, password verification via `polkit-agent-helper-1`, `AuthenticationAgentResponse2`, NSS username resolution (`getpwuid_r`), password zeroization, Escape key + 120s timeout, error feedback on wrong password, 12 unit tests | Config fields, IPC integration with psh-bar |
 | psh-launch | **done** | Long-lived daemon with IPC toggle, .desktop file parsing, fuzzy search with nucleo, GTK4 overlay, icon display (GTK4 icon theme), terminal app support, frecency sorting (persistent JSON), Enter/Escape/arrow key navigation, single-instance via GTK Application, desktop entry refresh on show | — |
 | psh-clip | **done** | Clipboard monitoring (`zwlr-data-control-v1`), `ClipEntry` (text + image), persistent history (`$XDG_DATA_HOME/psh/clip_history.json`), image caching (`$XDG_CACHE_HOME/psh/clips/`), GTK4 picker with search/filter, paste-on-select via data-control source, image thumbnails, self-copy detection, orphan image pruning, 39 tests | — |
-| psh-bar | **partial** | Layer-shell panel, CenterBox layout, IPC hub (accept + ping/pong), clock module (live), battery module (sysfs), static workspace buttons | Workspace module (niri IPC / ext-workspace), tray module (SNI protocol), volume module (PulseAudio/PipeWire), network module, window title module, IPC message routing to clients, configurable module loading, click actions |
+| psh-bar | **done** | BarModule trait + dynamic loading, bidirectional IPC hub, 10 modules (clock, battery, workspaces/niri, window_title/niri, volume/wpctl, network/NM D-Bus, tray/SNI, launcher btn, clipboard btn, notification count), configurable module layout, 35 tests | ext-workspace-v1 fallback (stub), ext-foreign-toplevel fallback (stub), wifi signal strength, tray DBusMenu right-click menus |
 | psh-lock | **stub** | Wayland surface + SCTK boilerplate, PAM function signature | ext-session-lock-v1 binding, keyboard input handling, tiny-skia password entry rendering, actual PAM conversation, multi-output lock surfaces, idle/DPMS integration |
 
 ## Phases
@@ -78,15 +78,15 @@ Clipboard daemon + picker.
 ### Phase 6 — Make psh-bar the integration hub
 Biggest component. Depends on stable IPC + other components.
 
-- [ ] **Workspace module** — connect to niri IPC socket, parse workspace list, update buttons on change, click to switch. Fallback: ext-workspace-v1 protocol.
-- [ ] **Window title module** — niri IPC for focused window title, or ext-foreign-toplevel
-- [ ] **Tray module** — implement StatusNotifierItem (SNI) / StatusNotifierWatcher D-Bus protocols, or integrate `system-tray` crate
-- [ ] **Volume module** — PipeWire/PulseAudio via `libpulse-binding` or `wireplumber` D-Bus, show level + mute, scroll to adjust
-- [ ] **Network module** — NetworkManager D-Bus interface, show connection type + name
-- [ ] **IPC message routing** — when hub receives `ToggleLauncher` etc., forward to connected clients
-- [ ] **Configurable module loading** — read `modules_left`/`modules_center`/`modules_right` from config, instantiate dynamically
-- [ ] **Click actions** — launcher button sends `ToggleLauncher`, clip button sends `ShowClipboardHistory`
-- [ ] **Module trait** — extract `BarModule` trait, refactor existing modules to implement it
+- [x] **Workspace module** — niri IPC event stream for workspace list, click to switch. ext-workspace-v1 fallback stub ready for implementation.
+- [x] **Window title module** — niri IPC EventStream for focused window title, with title truncation
+- [x] **Tray module** — `system-tray` crate integration for SNI items with icon rendering
+- [x] **Volume module** — `wpctl` subprocess polling, scroll-to-adjust, click-to-mute
+- [x] **Network module** — NetworkManager D-Bus interface via zbus, shows connection type + name
+- [x] **IPC message routing** — bidirectional hub: client messages fanned out to modules, module messages broadcast to clients
+- [x] **Configurable module loading** — `modules_left`/`modules_center`/`modules_right` from config with sensible defaults
+- [x] **Click actions** — launcher button (ToggleLauncher), clipboard button (ShowClipboardHistory), notification count badge
+- [x] **Module trait** — `BarModule` trait with `ModuleContext` (IPC channels + config), 10 modules registered
 
 ### Phase 7 — Make psh-lock security-complete
 Built last. Security-critical — must be correct.

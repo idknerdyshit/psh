@@ -56,6 +56,91 @@
     color: @psh-green;
 }
 
+.psh-bar-battery.low {
+    color: @psh-red;
+}
+
+/* Window title */
+.psh-bar-window-title {
+    color: @psh-subtext1;
+    padding: 0 8px;
+}
+
+/* Volume */
+.psh-bar-volume {
+    color: @psh-teal;
+}
+
+.psh-bar-volume.muted {
+    color: @psh-overlay0;
+}
+
+/* Network */
+.psh-bar-network {
+    color: @psh-blue;
+}
+
+.psh-bar-network.disconnected {
+    color: @psh-overlay0;
+}
+
+/* Tray */
+.psh-bar-tray {
+    padding: 0 4px;
+}
+
+.psh-bar-tray-item {
+    background: transparent;
+    border: none;
+    padding: 2px;
+    min-width: 20px;
+    min-height: 20px;
+}
+
+/* Launcher button */
+.psh-bar-launcher-btn {
+    background: transparent;
+    color: @psh-mauve;
+    border: none;
+    padding: 2px 8px;
+}
+
+.psh-bar-launcher-btn:hover {
+    background-color: @psh-surface0;
+}
+
+/* Clipboard button */
+.psh-bar-clipboard-btn {
+    background: transparent;
+    color: @psh-peach;
+    border: none;
+    padding: 2px 8px;
+}
+
+.psh-bar-clipboard-btn:hover {
+    background-color: @psh-surface0;
+}
+
+/* Notification count */
+.psh-bar-notifications {
+    color: @psh-yellow;
+}
+
+.psh-bar-notifications.has-notifications {
+    font-weight: bold;
+}
+
+.psh-bar-workspace-btn.focused {
+    color: @psh-text;
+    font-weight: bold;
+}
+
+.psh-bar-workspace-btn.focused:hover {
+    background-color: @psh-surface1;
+    color: @psh-text;
+    font-weight: bold;
+}
+
 /* Notifications */
 .psh-notify-stack {
     padding: 0;

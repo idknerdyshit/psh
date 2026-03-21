@@ -32,6 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 image = "0.25"
 async-channel = "2"
+futures-util = { version = "0.3", default-features = false }
 directories = "6"
 notify = "7"
 nucleo-matcher = "0.3"
@@ -45,3 +46,5 @@ libc = "0.2"
 rustix = { version = "1", features = ["event", "pipe"] }
 zeroize = "1"
 tempfile = "3"
+niri-ipc = "25.11"
+system-tray = "0.8"
