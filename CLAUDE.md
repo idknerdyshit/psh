@@ -63,6 +63,7 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 
 - Unit tests in psh-core for config parsing and IPC serialization
 - Unit tests in psh-clip for clipboard history data structure
+- Unit tests in psh-polkit for identity extraction, username resolution, session detection, session guard cleanup, and dispatcher routing (`cargo test -p psh-polkit -- --test-threads=1`)
 - Integration testing is manual: run component on a Wayland session and exercise it
 - Test notifications with: `notify-send "title" "body"`
 - Test polkit with: `pkexec ls`
@@ -70,6 +71,7 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 ## Implementation status
 
 See `PLAN.md` for per-phase breakdown.
-- **Complete:** psh-core, psh-wall, psh-notify
+- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit
 - **psh-notify** — full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons, signals, replace-id, icons, markup sanitization, IPC count broadcast.
-- **Partial scaffolds:** psh-bar, psh-polkit, psh-launch, psh-clip, psh-lock — compile and have basic structure but need significant feature work.
+- **psh-polkit** — full polkit auth agent: authority registration, session detection, per-session concurrent auth, password verification via polkit-agent-helper-1, NSS username resolution, password zeroization, Escape key + 120s timeout, 12 unit tests.
+- **Partial scaffolds:** psh-bar, psh-launch, psh-clip, psh-lock — compile and have basic structure but need significant feature work.

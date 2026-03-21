@@ -16,3 +16,6 @@ zbus = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 async-channel = { workspace = true }
+secrecy = { workspace = true }
+libc = { workspace = true }
+zeroize = { workspace = true }

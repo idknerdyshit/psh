@@ -9,7 +9,7 @@ Status legend: **done** = working, **partial** = compiles but incomplete, **stub
 | psh-core | **done** | Config parsing + hot-reload, IPC protocol, theme loading, D-Bus helpers, error types, logging. 8 tests. | — |
 | psh-wall | **done** | Multi-output layer surfaces, all wallpaper modes (fill/fit/center/stretch/tile), HiDPI scale factor, output hotplug, IPC `SetWallpaper` listener, calloop event loop, SIGTERM shutdown | — |
 | psh-notify | **done** | Full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons with `ActionInvoked` signal, `NotificationClosed` signal, replace-id, app icons (name + image-data hint), markup sanitization, `NotificationCount` IPC broadcast, `max_visible` enforcement, configurable timeouts | — |
-| psh-polkit | **partial** | D-Bus agent interface, GTK4 auth dialog with password entry, cancel/auth buttons | Actually registering with polkit authority (`RegisterAuthenticationAgent` call), passing password back through polkit's `AuthenticationAgentResponse`, proper identity/user handling, error feedback on wrong password |
+| psh-polkit | **done** | Full polkit auth agent: authority registration, session detection, per-session concurrent auth with `SessionGuard`, password verification via `polkit-agent-helper-1`, `AuthenticationAgentResponse2`, NSS username resolution (`getpwuid_r`), password zeroization, Escape key + 120s timeout, error feedback on wrong password, 12 unit tests | Config fields, IPC integration with psh-bar |
 | psh-launch | **partial** | .desktop file parsing, fuzzy search with nucleo, GTK4 overlay, keyboard close, row activation launches app | IPC toggle (`ToggleLauncher` listener), terminal app support (launch in configured terminal), icon display, recent/frequent sorting, multi-instance prevention (toggle on/off) |
 | psh-clip | **partial** | Clipboard history data structure (with tests), GTK4 picker UI, IPC listener | Actual clipboard monitoring (`zwlr-data-control-v1`), paste-on-select (set clipboard from history), persistent history across restarts, image clipboard support |
 | psh-bar | **partial** | Layer-shell panel, CenterBox layout, IPC hub (accept + ping/pong), clock module (live), battery module (sysfs), static workspace buttons | Workspace module (niri IPC / ext-workspace), tray module (SNI protocol), volume module (PulseAudio/PipeWire), network module, window title module, IPC message routing to clients, configurable module loading, click actions |
@@ -42,12 +42,17 @@ First real GTK4 component, testable with `notify-send`.
 ### Phase 3 — Make psh-polkit functional
 Small scope, high value — needed for any privileged action.
 
-- [ ] Call `RegisterAuthenticationAgent` on the polkit authority at startup
-- [ ] Parse identity list properly (extract unix-user uid)
-- [ ] Send password back via `AuthenticationAgentResponse2` D-Bus call
-- [ ] Handle auth failure — show error label, allow retry
-- [ ] Handle `cancel_authentication` — close dialog
-- [ ] Proper session/subject detection for registration
+- [x] Call `RegisterAuthenticationAgent` on the polkit authority at startup
+- [x] Parse identity list properly (extract unix-user uid)
+- [x] Send password back via `AuthenticationAgentResponse2` D-Bus call
+- [x] Handle auth failure — show error label, allow retry
+- [x] Handle `cancel_authentication` — close dialog
+- [x] Proper session/subject detection for registration
+- [x] NSS-aware username resolution (`getpwuid_r`)
+- [x] Per-session channel routing for concurrent auth requests
+- [x] Password zeroization (`SecretString` + `zeroize`)
+- [x] Escape key and 120-second auto-cancel timeout
+- [x] Unit tests (12 tests: identity extraction, username resolution, session detection, session guard, dispatcher routing)
 
 ### Phase 4 — Make psh-launch functional
 Keyboard-driven launcher overlay.
