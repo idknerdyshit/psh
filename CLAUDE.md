@@ -70,6 +70,6 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 ## Implementation status
 
 See `PLAN.md` for per-phase breakdown.
-- **Complete:** psh-core, psh-wall
-- **Functional:** psh-notify — implements the full fd.o Notifications D-Bus spec (signals, actions, urgency, icons, replace-id, IPC count broadcast). Known limitation: one layer-shell window per notification (planned single-window refactor).
+- **Complete:** psh-core, psh-wall, psh-notify
+- **psh-notify** — full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons, signals, replace-id, icons, markup sanitization, IPC count broadcast.
 - **Partial scaffolds:** psh-bar, psh-polkit, psh-launch, psh-clip, psh-lock — compile and have basic structure but need significant feature work.

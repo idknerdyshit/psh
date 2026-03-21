@@ -8,7 +8,7 @@ Status legend: **done** = working, **partial** = compiles but incomplete, **stub
 |---|---|---|---|
 | psh-core | **done** | Config parsing + hot-reload, IPC protocol, theme loading, D-Bus helpers, error types, logging. 8 tests. | — |
 | psh-wall | **done** | Multi-output layer surfaces, all wallpaper modes (fill/fit/center/stretch/tile), HiDPI scale factor, output hotplug, IPC `SetWallpaper` listener, calloop event loop, SIGTERM shutdown | — |
-| psh-notify | **partial** | D-Bus server (`org.freedesktop.Notifications`), popup window with summary/body, auto-dismiss timeout | Notification stacking/positioning, action buttons, urgency styling, notification history/count, IPC `NotificationCount` broadcast, replace-id visual update, icons |
+| psh-notify | **done** | Full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons with `ActionInvoked` signal, `NotificationClosed` signal, replace-id, app icons (name + image-data hint), markup sanitization, `NotificationCount` IPC broadcast, `max_visible` enforcement, configurable timeouts | — |
 | psh-polkit | **partial** | D-Bus agent interface, GTK4 auth dialog with password entry, cancel/auth buttons | Actually registering with polkit authority (`RegisterAuthenticationAgent` call), passing password back through polkit's `AuthenticationAgentResponse`, proper identity/user handling, error feedback on wrong password |
 | psh-launch | **partial** | .desktop file parsing, fuzzy search with nucleo, GTK4 overlay, keyboard close, row activation launches app | IPC toggle (`ToggleLauncher` listener), terminal app support (launch in configured terminal), icon display, recent/frequent sorting, multi-instance prevention (toggle on/off) |
 | psh-clip | **partial** | Clipboard history data structure (with tests), GTK4 picker UI, IPC listener | Actual clipboard monitoring (`zwlr-data-control-v1`), paste-on-select (set clipboard from history), persistent history across restarts, image clipboard support |
@@ -30,14 +30,14 @@ The simplest component. Get it production-ready first.
 ### Phase 2 — Make psh-notify fully functional
 First real GTK4 component, testable with `notify-send`.
 
-- [ ] Notification stacking — offset each popup below the previous one
-- [ ] Track active notifications, respect `max_visible` config
-- [ ] Urgency levels (`low`/`normal`/`critical`) with distinct styling
-- [ ] Action buttons — render and emit `ActionInvoked` D-Bus signal on click
-- [ ] `NotificationClosed` D-Bus signal with proper reason codes
-- [ ] Replace-id support — update existing popup instead of creating new one
-- [ ] App icon display (from icon name or image data hint)
-- [ ] Broadcast `NotificationCount` over IPC to psh-bar
+- [x] Notification stacking — single-window architecture with vertical Box layout
+- [x] Track active notifications, respect `max_visible` config
+- [x] Urgency levels (`low`/`normal`/`critical`) with distinct styling
+- [x] Action buttons — render and emit `ActionInvoked` D-Bus signal on click
+- [x] `NotificationClosed` D-Bus signal with proper reason codes
+- [x] Replace-id support — update existing popup instead of creating new one
+- [x] App icon display (from icon name or image data hint)
+- [x] Broadcast `NotificationCount` over IPC to psh-bar
 
 ### Phase 3 — Make psh-polkit functional
 Small scope, high value — needed for any privileged action.
