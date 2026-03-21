@@ -1,0 +1,18 @@
+[package]
+name = "psh-lock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "psh-lock"
+path = "src/main.rs"
+
+[dependencies]
+psh-core = { workspace = true }
+smithay-client-toolkit = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+pam-client = { workspace = true }
+tiny-skia = { workspace = true }
+wayland-client = { workspace = true }

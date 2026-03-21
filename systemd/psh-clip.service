@@ -1,0 +1,13 @@
+[Unit]
+Description=psh clipboard manager
+PartOf=psh.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/psh-clip
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=psh.target

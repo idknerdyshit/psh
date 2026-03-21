@@ -1,0 +1,13 @@
+[Unit]
+Description=psh polkit authentication agent
+PartOf=psh.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/psh-polkit
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=psh.target

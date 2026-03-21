@@ -1,0 +1,19 @@
+[package]
+name = "psh-clip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "psh-clip"
+path = "src/main.rs"
+
+[dependencies]
+psh-core = { workspace = true, features = ["gtk"] }
+gtk4 = { workspace = true }
+gtk4-layer-shell = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-channel = { workspace = true }

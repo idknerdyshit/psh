@@ -1,0 +1,137 @@
+/* psh default theme — Catppuccin Mocha inspired */
+
+@define-color psh-base #1e1e2e;
+@define-color psh-mantle #181825;
+@define-color psh-crust #11111b;
+@define-color psh-surface0 #313244;
+@define-color psh-surface1 #45475a;
+@define-color psh-surface2 #585b70;
+@define-color psh-overlay0 #6c7086;
+@define-color psh-text #cdd6f4;
+@define-color psh-subtext0 #a6adc8;
+@define-color psh-subtext1 #bac2de;
+@define-color psh-blue #89b4fa;
+@define-color psh-lavender #b4befe;
+@define-color psh-green #a6e3a1;
+@define-color psh-yellow #f9e2af;
+@define-color psh-peach #fab387;
+@define-color psh-red #f38ba8;
+@define-color psh-mauve #cba6f7;
+@define-color psh-teal #94e2d5;
+
+/* Bar */
+.psh-bar {
+    background-color: @psh-base;
+    color: @psh-text;
+    font-family: monospace;
+    font-size: 14px;
+    padding: 0 4px;
+}
+
+.psh-bar-clock {
+    color: @psh-blue;
+    font-weight: bold;
+}
+
+.psh-bar-workspace-btn {
+    background: transparent;
+    color: @psh-overlay0;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 8px;
+    min-width: 24px;
+    min-height: 24px;
+}
+
+.psh-bar-workspace-btn.active {
+    background-color: @psh-surface0;
+    color: @psh-lavender;
+}
+
+.psh-bar-workspace-btn:hover {
+    background-color: @psh-surface1;
+}
+
+.psh-bar-battery {
+    color: @psh-green;
+}
+
+/* Notifications */
+.psh-notify-popup {
+    background-color: @psh-base;
+    border: 1px solid @psh-surface1;
+    border-radius: 12px;
+    color: @psh-text;
+}
+
+.psh-notify-summary {
+    font-weight: bold;
+    font-size: 14px;
+}
+
+.psh-notify-body {
+    color: @psh-subtext1;
+    font-size: 13px;
+}
+
+/* Polkit */
+.psh-polkit-dialog {
+    background-color: @psh-base;
+    border: 1px solid @psh-surface1;
+    border-radius: 12px;
+    color: @psh-text;
+}
+
+.psh-polkit-title {
+    font-size: 16px;
+    font-weight: bold;
+    color: @psh-lavender;
+}
+
+/* Launcher */
+.psh-launch {
+    background-color: @psh-base;
+    border: 1px solid @psh-surface1;
+    border-radius: 12px;
+    color: @psh-text;
+}
+
+.psh-launch-search {
+    background-color: @psh-surface0;
+    color: @psh-text;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 18px;
+    margin: 12px;
+}
+
+.psh-launch-results row {
+    padding: 4px 0;
+}
+
+.psh-launch-results row:selected {
+    background-color: @psh-surface0;
+}
+
+/* Clipboard */
+.psh-clip {
+    background-color: @psh-base;
+    border: 1px solid @psh-surface1;
+    border-radius: 12px;
+    color: @psh-text;
+}
+
+.psh-clip-title {
+    font-size: 16px;
+    font-weight: bold;
+    color: @psh-lavender;
+}
+
+.psh-clip-list row {
+    border-bottom: 1px solid @psh-surface0;
+}
+
+.psh-clip-list row:selected {
+    background-color: @psh-surface0;
+}

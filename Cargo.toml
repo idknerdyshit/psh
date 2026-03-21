@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/psh-core",
+    "crates/psh-bar",
+    "crates/psh-notify",
+    "crates/psh-polkit",
+    "crates/psh-launch",
+    "crates/psh-wall",
+    "crates/psh-lock",
+    "crates/psh-clip",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/psh-de/psh"
+
+[workspace.dependencies]
+psh-core = { path = "crates/psh-core" }
+gtk4 = "0.9"
+gtk4-layer-shell = "0.5"
+zbus = "5"
+smithay-client-toolkit = "0.19"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+image = "0.25"
+async-channel = "2"
+directories = "6"
+notify = "7"
+nucleo-matcher = "0.3"
+pam-client = "0.5"
+tiny-skia = "0.11"
+signal-hook = "0.3"
+wayland-client = "0.31"

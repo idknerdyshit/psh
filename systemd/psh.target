@@ -1,0 +1,7 @@
+[Unit]
+Description=psh desktop environment
+Wants=psh-bar.service psh-notify.service psh-polkit.service psh-wall.service psh-clip.service
+After=graphical-session.target
+
+[Install]
+WantedBy=graphical-session.target

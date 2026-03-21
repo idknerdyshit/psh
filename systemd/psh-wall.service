@@ -1,0 +1,13 @@
+[Unit]
+Description=psh wallpaper manager
+PartOf=psh.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/psh-wall
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=psh.target

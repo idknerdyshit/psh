@@ -1,0 +1,19 @@
+[package]
+name = "psh-notify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "psh-notify"
+path = "src/main.rs"
+
+[dependencies]
+psh-core = { workspace = true, features = ["gtk"] }
+gtk4 = { workspace = true }
+gtk4-layer-shell = { workspace = true }
+zbus = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+async-channel = { workspace = true }

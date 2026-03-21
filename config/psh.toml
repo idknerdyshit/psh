@@ -1,0 +1,33 @@
+# psh configuration
+# Place at $XDG_CONFIG_HOME/psh/psh.toml (usually ~/.config/psh/psh.toml)
+# All values shown are defaults — this file is optional.
+
+[theme]
+name = "default"
+
+[bar]
+position = "top"
+# height = 32
+# modules_left = ["workspaces"]
+# modules_center = ["clock"]
+# modules_right = ["battery"]
+
+[notify]
+max_visible = 5
+default_timeout_ms = 5000
+
+[polkit]
+
+[launch]
+# terminal = "foot"
+# max_results = 20
+
+[wall]
+# path = "/home/user/wallpaper.png"
+mode = "fill"
+
+[lock]
+show_clock = true
+
+[clip]
+max_history = 100

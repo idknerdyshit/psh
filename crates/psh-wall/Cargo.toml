@@ -1,0 +1,18 @@
+[package]
+name = "psh-wall"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "psh-wall"
+path = "src/main.rs"
+
+[dependencies]
+psh-core = { workspace = true }
+smithay-client-toolkit = { workspace = true }
+image = { workspace = true }
+signal-hook = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+wayland-client = { workspace = true }
