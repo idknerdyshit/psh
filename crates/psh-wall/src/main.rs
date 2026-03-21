@@ -1,3 +1,10 @@
+//! psh-wall — wallpaper manager for the psh desktop environment.
+//!
+//! A pure Wayland client (no GTK) using smithay-client-toolkit to render
+//! wallpapers on layer-shell background surfaces. Supports multiple outputs
+//! with HiDPI scaling, five wallpaper modes (fill/fit/center/stretch/tile),
+//! output hotplug, and live wallpaper changes via IPC.
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

@@ -1,3 +1,10 @@
+//! psh-polkit — polkit authentication agent for the psh desktop environment.
+//!
+//! Registers as a polkit agent on the D-Bus system bus and shows a GTK4
+//! layer-shell password dialog when privileged actions are requested. Supports
+//! concurrent per-session authentication, password verification via
+//! `polkit-agent-helper-1`, NSS username resolution, and password zeroization.
+
 #![allow(dead_code, unused_imports)]
 
 mod agent;

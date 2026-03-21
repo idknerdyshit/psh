@@ -1,3 +1,10 @@
+//! psh-notify — notification daemon for the psh desktop environment.
+//!
+//! Implements the `org.freedesktop.Notifications` D-Bus interface. Displays
+//! notifications as stacked popups in a single GTK4 layer-shell overlay window
+//! with urgency styling, action buttons, icon display, and markup sanitization.
+//! Broadcasts notification counts to psh-bar via IPC.
+
 mod dbus_server;
 mod manager;
 
