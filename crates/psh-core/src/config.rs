@@ -125,15 +125,24 @@ impl Default for LockConfig {
     }
 }
 
+/// Configuration for the clipboard manager.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ClipConfig {
     pub max_history: usize,
+    pub persist: bool,
+    pub image_support: bool,
+    pub max_image_bytes: usize,
 }
 
 impl Default for ClipConfig {
     fn default() -> Self {
-        Self { max_history: 100 }
+        Self {
+            max_history: 100,
+            persist: true,
+            image_support: true,
+            max_image_bytes: 10_000_000,
+        }
     }
 }
 

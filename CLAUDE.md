@@ -62,7 +62,7 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 ## Testing
 
 - Unit tests in psh-core for config parsing and IPC serialization
-- Unit tests in psh-clip for clipboard history data structure
+- Unit tests in psh-clip for clipboard history, persistence, and monitor helpers (`cargo test -p psh-clip`)
 - Unit tests in psh-polkit for identity extraction, username resolution, session detection, session guard cleanup, and dispatcher routing (`cargo test -p psh-polkit -- --test-threads=1`)
 - Integration testing is manual: run component on a Wayland session and exercise it
 - Test notifications with: `notify-send "title" "body"`
@@ -71,8 +71,9 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 ## Implementation status
 
 See `PLAN.md` for per-phase breakdown.
-- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit, psh-launch
+- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit, psh-launch, psh-clip
 - **psh-notify** — full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons, signals, replace-id, icons, markup sanitization, IPC count broadcast.
 - **psh-polkit** — full polkit auth agent: authority registration, session detection, per-session concurrent auth, password verification via polkit-agent-helper-1, NSS username resolution, password zeroization, Escape key + 120s timeout, 12 unit tests.
 - **psh-launch** — long-lived daemon with IPC toggle, .desktop parsing, nucleo fuzzy search, GTK4 icon display, terminal app support, frecency sorting (persistent JSON), Enter/Escape keyboard nav, single-instance, desktop entry refresh on show, 4 unit tests.
-- **Partial scaffolds:** psh-bar, psh-clip, psh-lock — compile and have basic structure but need significant feature work.
+- **psh-clip** — clipboard manager daemon: `zwlr-data-control-v1` monitoring via independent Wayland connection, `ClipEntry` (text + image), persistent history at `$XDG_DATA_HOME/psh/clip_history.json`, image caching at `$XDG_CACHE_HOME/psh/clips/`, GTK4 picker with search/filter, paste-on-select via data-control source, image thumbnails, self-copy detection, 39 unit tests.
+- **Partial scaffolds:** psh-bar, psh-lock — compile and have basic structure but need significant feature work.

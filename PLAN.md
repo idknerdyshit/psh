@@ -11,7 +11,7 @@ Status legend: **done** = working, **partial** = compiles but incomplete, **stub
 | psh-notify | **done** | Full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons with `ActionInvoked` signal, `NotificationClosed` signal, replace-id, app icons (name + image-data hint), markup sanitization, `NotificationCount` IPC broadcast, `max_visible` enforcement, configurable timeouts | — |
 | psh-polkit | **done** | Full polkit auth agent: authority registration, session detection, per-session concurrent auth with `SessionGuard`, password verification via `polkit-agent-helper-1`, `AuthenticationAgentResponse2`, NSS username resolution (`getpwuid_r`), password zeroization, Escape key + 120s timeout, error feedback on wrong password, 12 unit tests | Config fields, IPC integration with psh-bar |
 | psh-launch | **done** | Long-lived daemon with IPC toggle, .desktop file parsing, fuzzy search with nucleo, GTK4 overlay, icon display (GTK4 icon theme), terminal app support, frecency sorting (persistent JSON), Enter/Escape/arrow key navigation, single-instance via GTK Application, desktop entry refresh on show | — |
-| psh-clip | **partial** | Clipboard history data structure (with tests), GTK4 picker UI, IPC listener | Actual clipboard monitoring (`zwlr-data-control-v1`), paste-on-select (set clipboard from history), persistent history across restarts, image clipboard support |
+| psh-clip | **done** | Clipboard monitoring (`zwlr-data-control-v1`), `ClipEntry` (text + image), persistent history (`$XDG_DATA_HOME/psh/clip_history.json`), image caching (`$XDG_CACHE_HOME/psh/clips/`), GTK4 picker with search/filter, paste-on-select via data-control source, image thumbnails, self-copy detection, orphan image pruning, 39 tests | — |
 | psh-bar | **partial** | Layer-shell panel, CenterBox layout, IPC hub (accept + ping/pong), clock module (live), battery module (sysfs), static workspace buttons | Workspace module (niri IPC / ext-workspace), tray module (SNI protocol), volume module (PulseAudio/PipeWire), network module, window title module, IPC message routing to clients, configurable module loading, click actions |
 | psh-lock | **stub** | Wayland surface + SCTK boilerplate, PAM function signature | ext-session-lock-v1 binding, keyboard input handling, tiny-skia password entry rendering, actual PAM conversation, multi-output lock surfaces, idle/DPMS integration |
 
@@ -68,12 +68,12 @@ Keyboard-driven launcher overlay.
 ### Phase 5 — Make psh-clip functional
 Clipboard daemon + picker.
 
-- [ ] Implement `zwlr-data-control-v1` clipboard monitoring via smithay-client-toolkit
-- [ ] Store clipboard entries in `ClipHistory` as they arrive
-- [ ] Paste-on-select — when user picks a history item, set it as the active clipboard selection
-- [ ] Persistent history — save/load to `$XDG_DATA_HOME/psh/clip_history.json`
-- [ ] Image clipboard support (store as paths to temp files)
-- [ ] Search/filter in picker UI
+- [x] Implement `zwlr-data-control-v1` clipboard monitoring via independent wayland-client connection
+- [x] Store clipboard entries in `ClipHistory` as they arrive
+- [x] Paste-on-select — when user picks a history item, set it as the active clipboard selection
+- [x] Persistent history — save/load to `$XDG_DATA_HOME/psh/clip_history.json`
+- [x] Image clipboard support (store as paths to cache files)
+- [x] Search/filter in picker UI
 
 ### Phase 6 — Make psh-bar the integration hub
 Biggest component. Depends on stable IPC + other components.

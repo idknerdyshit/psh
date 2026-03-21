@@ -190,3 +190,20 @@
 .psh-clip-list row:selected {
     background-color: @psh-surface0;
 }
+
+.psh-clip-search {
+    background-color: @psh-surface0;
+    color: @psh-text;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 15px;
+}
+
+.psh-clip-image-thumb {
+    border-radius: 4px;
+}
+
+.psh-clip-entry-box {
+    padding: 2px 0;
+}

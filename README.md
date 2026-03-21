@@ -13,7 +13,7 @@ psh provides the essential desktop shell utilities -- bar, notifications, app la
 | **psh-notify** | Notification daemon (`org.freedesktop.Notifications`) | GTK4 + layer-shell + zbus |
 | **psh-polkit** | Polkit authentication agent | GTK4 + layer-shell + zbus |
 | **psh-launch** | Application launcher with fuzzy search | GTK4 + layer-shell + nucleo |
-| **psh-clip** | Clipboard history manager | GTK4 + layer-shell |
+| **psh-clip** | Clipboard history manager | GTK4 + layer-shell + wayland-client |
 | **psh-wall** | Wallpaper manager | smithay-client-toolkit |
 | **psh-lock** | Screen locker | smithay-client-toolkit + PAM |
 
@@ -57,7 +57,7 @@ systemctl --user enable --now psh.target
 
 ## Status
 
-This project is under active development. psh-core and psh-wall are feature-complete. All other components are functional scaffolds with basic structure in place. See [PLAN.md](PLAN.md) for the detailed roadmap.
+This project is under active development. psh-core, psh-wall, psh-notify, psh-polkit, psh-launch, and psh-clip are feature-complete. psh-bar and psh-lock are functional scaffolds. See [PLAN.md](PLAN.md) for the detailed roadmap.
 
 ## License
 

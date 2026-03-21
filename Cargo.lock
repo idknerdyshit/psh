@@ -1961,13 +1961,18 @@ name = "psh-clip"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "directories",
  "gtk4",
  "gtk4-layer-shell",
  "psh-core",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
+ "wayland-client",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

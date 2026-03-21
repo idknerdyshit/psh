@@ -17,3 +17,10 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-channel = { workspace = true }
+wayland-client = { workspace = true }
+wayland-protocols-wlr = { workspace = true }
+directories = { workspace = true }
+rustix = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
