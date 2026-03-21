@@ -71,7 +71,8 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 ## Implementation status
 
 See `PLAN.md` for per-phase breakdown.
-- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit
+- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit, psh-launch
 - **psh-notify** — full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons, signals, replace-id, icons, markup sanitization, IPC count broadcast.
 - **psh-polkit** — full polkit auth agent: authority registration, session detection, per-session concurrent auth, password verification via polkit-agent-helper-1, NSS username resolution, password zeroization, Escape key + 120s timeout, 12 unit tests.
-- **Partial scaffolds:** psh-bar, psh-launch, psh-clip, psh-lock — compile and have basic structure but need significant feature work.
+- **psh-launch** — long-lived daemon with IPC toggle, .desktop parsing, nucleo fuzzy search, GTK4 icon display, terminal app support, frecency sorting (persistent JSON), Enter/Escape keyboard nav, single-instance, desktop entry refresh on show, 4 unit tests.
+- **Partial scaffolds:** psh-bar, psh-clip, psh-lock — compile and have basic structure but need significant feature work.

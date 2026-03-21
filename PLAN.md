@@ -10,7 +10,7 @@ Status legend: **done** = working, **partial** = compiles but incomplete, **stub
 | psh-wall | **done** | Multi-output layer surfaces, all wallpaper modes (fill/fit/center/stretch/tile), HiDPI scale factor, output hotplug, IPC `SetWallpaper` listener, calloop event loop, SIGTERM shutdown | — |
 | psh-notify | **done** | Full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons with `ActionInvoked` signal, `NotificationClosed` signal, replace-id, app icons (name + image-data hint), markup sanitization, `NotificationCount` IPC broadcast, `max_visible` enforcement, configurable timeouts | — |
 | psh-polkit | **done** | Full polkit auth agent: authority registration, session detection, per-session concurrent auth with `SessionGuard`, password verification via `polkit-agent-helper-1`, `AuthenticationAgentResponse2`, NSS username resolution (`getpwuid_r`), password zeroization, Escape key + 120s timeout, error feedback on wrong password, 12 unit tests | Config fields, IPC integration with psh-bar |
-| psh-launch | **partial** | .desktop file parsing, fuzzy search with nucleo, GTK4 overlay, keyboard close, row activation launches app | IPC toggle (`ToggleLauncher` listener), terminal app support (launch in configured terminal), icon display, recent/frequent sorting, multi-instance prevention (toggle on/off) |
+| psh-launch | **done** | Long-lived daemon with IPC toggle, .desktop file parsing, fuzzy search with nucleo, GTK4 overlay, icon display (GTK4 icon theme), terminal app support, frecency sorting (persistent JSON), Enter/Escape/arrow key navigation, single-instance via GTK Application, desktop entry refresh on show | — |
 | psh-clip | **partial** | Clipboard history data structure (with tests), GTK4 picker UI, IPC listener | Actual clipboard monitoring (`zwlr-data-control-v1`), paste-on-select (set clipboard from history), persistent history across restarts, image clipboard support |
 | psh-bar | **partial** | Layer-shell panel, CenterBox layout, IPC hub (accept + ping/pong), clock module (live), battery module (sysfs), static workspace buttons | Workspace module (niri IPC / ext-workspace), tray module (SNI protocol), volume module (PulseAudio/PipeWire), network module, window title module, IPC message routing to clients, configurable module loading, click actions |
 | psh-lock | **stub** | Wayland surface + SCTK boilerplate, PAM function signature | ext-session-lock-v1 binding, keyboard input handling, tiny-skia password entry rendering, actual PAM conversation, multi-output lock surfaces, idle/DPMS integration |
@@ -57,13 +57,13 @@ Small scope, high value — needed for any privileged action.
 ### Phase 4 — Make psh-launch functional
 Keyboard-driven launcher overlay.
 
-- [ ] IPC client — listen for `ToggleLauncher`, toggle window visibility
-- [ ] Single-instance — second launch sends toggle via IPC instead of starting new process
-- [ ] Terminal app support — detect `Terminal=true` in .desktop, launch via configured terminal
-- [ ] Icon display — resolve icon names to paths via icon theme spec
-- [ ] Frecency sorting — track launch counts, weight recent + frequent apps higher
-- [ ] Enter key activates selected row
-- [ ] Up/Down arrow key navigation in results
+- [x] IPC client — listen for `ToggleLauncher`, toggle window visibility
+- [x] Single-instance — second launch sends toggle via IPC instead of starting new process
+- [x] Terminal app support — detect `Terminal=true` in .desktop, launch via configured terminal
+- [x] Icon display — resolve icon names to paths via icon theme spec
+- [x] Frecency sorting — track launch counts, weight recent + frequent apps higher
+- [x] Enter key activates selected row
+- [x] Up/Down arrow key navigation in results
 
 ### Phase 5 — Make psh-clip functional
 Clipboard daemon + picker.

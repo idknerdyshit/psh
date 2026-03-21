@@ -1,6 +1,15 @@
-#![allow(dead_code, unused_imports)]
+//! psh-launch — application launcher daemon for the psh desktop environment.
+//!
+//! Runs as a long-lived process with a hidden GTK4 layer-shell overlay window.
+//! Listens for `ToggleLauncher` IPC messages to show/hide the launcher. Provides
+//! fuzzy search over `.desktop` files with frecency-based result ordering and
+//! supports launching both graphical and terminal applications.
 
 mod desktop;
+mod frecency;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -14,16 +23,29 @@ fn main() {
 
     let cfg = psh_core::config::load().expect("failed to load config");
     let max_results = cfg.launch.max_results.unwrap_or(20);
+    let terminal_cmd = cfg.launch.terminal.clone();
+    let theme_name = cfg.theme.name.clone();
 
     let app = gtk4::Application::builder()
         .application_id("com.psh.launch")
         .build();
 
-    app.connect_activate(move |app| {
-        psh_core::theme::apply_theme(&cfg.theme.name);
+    let window_ref: Rc<RefCell<Option<gtk4::ApplicationWindow>>> = Rc::new(RefCell::new(None));
 
-        let entries = desktop::load_desktop_entries();
-        tracing::info!("loaded {} desktop entries", entries.len());
+    let window_ref_activate = window_ref.clone();
+    app.connect_activate(move |app| {
+        // If window already exists, toggle it and return (single-instance).
+        if let Some(ref win) = *window_ref_activate.borrow() {
+            toggle_window(win);
+            return;
+        }
+
+        psh_core::theme::apply_theme(&theme_name);
+
+        let tracker = Rc::new(RefCell::new(frecency::FrecencyTracker::load()));
+        let entries = Rc::new(RefCell::new(desktop::load_desktop_entries()));
+        let matcher = Rc::new(RefCell::new(Matcher::new(Config::DEFAULT)));
+        tracing::info!("loaded {} desktop entries", entries.borrow().len());
 
         let window = gtk4::ApplicationWindow::builder()
             .application(app)
@@ -56,79 +78,129 @@ fn main() {
         scroll.set_child(Some(&list_box));
         container.append(&scroll);
 
-        // Populate initial list
-        let entries_clone = entries.clone();
-        for entry in entries_clone.iter().take(max_results) {
-            let row = create_entry_row(entry);
-            list_box.append(&row);
-        }
+        populate_list(&list_box, &entries.borrow(), &tracker.borrow(), &mut matcher.borrow_mut(), "", max_results);
 
-        // Search filtering
         let entries_search = entries.clone();
-        let list_box_clone = list_box.clone();
+        let tracker_search = tracker.clone();
+        let matcher_search = matcher.clone();
+        let list_box_search = list_box.clone();
         search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_string();
-            while let Some(row) = list_box_clone.row_at_index(0) {
-                list_box_clone.remove(&row);
-            }
-
-            if query.is_empty() {
-                for e in entries_search.iter().take(max_results) {
-                    list_box_clone.append(&create_entry_row(e));
-                }
-                return;
-            }
-
-            let mut matcher = Matcher::new(Config::DEFAULT);
-            let pattern =
-                Pattern::new(&query, CaseMatching::Ignore, Normalization::Smart, AtomKind::Fuzzy);
-
-            let mut scored: Vec<_> = entries_search
-                .iter()
-                .filter_map(|e| {
-                    let mut buf = Vec::new();
-                    let haystack = nucleo_matcher::Utf32Str::new(&e.name, &mut buf);
-                    pattern.score(haystack, &mut matcher).map(|s| (e, s))
-                })
-                .collect();
-            scored.sort_by(|a, b| b.1.cmp(&a.1));
-
-            for (e, _) in scored.into_iter().take(max_results) {
-                list_box_clone.append(&create_entry_row(e));
-            }
+            populate_list(
+                &list_box_search,
+                &entries_search.borrow(),
+                &tracker_search.borrow(),
+                &mut matcher_search.borrow_mut(),
+                &query,
+                max_results,
+            );
         });
 
-        // Launch on row activation
-        let window_clone = window.clone();
+        let window_launch = window.clone();
+        let tracker_launch = tracker.clone();
+        let entries_launch = entries.clone();
+        let terminal_cmd_clone = terminal_cmd.clone();
         list_box.connect_row_activated(move |_, row| {
-            if let Some(entry) = row
+            let Some(idx) = row
                 .widget_name()
-                .strip_prefix("entry:")
-                .and_then(|name| entries.iter().find(|e| e.exec == name))
-            {
-                tracing::info!("launching: {}", entry.exec);
-                let _ = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&entry.exec)
-                    .spawn();
-            }
-            window_clone.close();
+                .strip_prefix("idx:")
+                .and_then(|s| s.parse::<usize>().ok())
+            else {
+                return;
+            };
+
+            let borrowed = entries_launch.borrow();
+            let Some(entry) = borrowed.get(idx) else {
+                return;
+            };
+
+            launch_app(entry, terminal_cmd_clone.as_deref());
+            tracker_launch.borrow_mut().record(&entry.exec);
+            hide_window(&window_launch);
         });
 
-        // Close on Escape
         let key_controller = gtk4::EventControllerKey::new();
-        let window_esc = window.clone();
+        let window_key = window.clone();
+        let list_box_key = list_box.clone();
         key_controller.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk4::gdk::Key::Escape {
-                window_esc.close();
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
+            match key {
+                gtk4::gdk::Key::Escape => {
+                    hide_window(&window_key);
+                    glib::Propagation::Stop
+                }
+                gtk4::gdk::Key::Return | gtk4::gdk::Key::KP_Enter => {
+                    if let Some(row) = list_box_key.selected_row() {
+                        row.activate();
+                    }
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
             }
         });
         window.add_controller(key_controller);
 
         window.set_child(Some(&container));
+
+        *window_ref_activate.borrow_mut() = Some(window.clone());
+
+        let search_entry_ref = search_entry.clone();
+        let list_box_ref = list_box.clone();
+        let entries_ref = entries.clone();
+        let tracker_ref = tracker.clone();
+        let matcher_ref = matcher.clone();
+
+        // IPC client: listen for ToggleLauncher on a background thread with auto-reconnect.
+        let (tx, rx) = async_channel::bounded::<()>(4);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                loop {
+                    match psh_core::ipc::connect().await {
+                        Ok(mut stream) => {
+                            tracing::info!("connected to IPC hub");
+                            loop {
+                                match psh_core::ipc::recv(&mut stream).await {
+                                    Ok(psh_core::ipc::Message::ToggleLauncher) => {
+                                        let _ = tx.send(()).await;
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        tracing::warn!("IPC recv failed: {e}, reconnecting");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!("IPC connect failed: {e}, retrying in 5s");
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            });
+        });
+
+        // Receive toggle signals on the GTK thread.
+        let window_ipc = window.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(()) = rx.recv().await {
+                if !window_ipc.is_visible() {
+                    *entries_ref.borrow_mut() = desktop::load_desktop_entries();
+                    populate_list(
+                        &list_box_ref,
+                        &entries_ref.borrow(),
+                        &tracker_ref.borrow(),
+                        &mut matcher_ref.borrow_mut(),
+                        "",
+                        max_results,
+                    );
+                    search_entry_ref.set_text("");
+                    search_entry_ref.grab_focus();
+                }
+                toggle_window(&window_ipc);
+            }
+        });
+
         window.present();
         search_entry.grab_focus();
     });
@@ -136,15 +208,96 @@ fn main() {
     app.run_with_args::<String>(&[]);
 }
 
-fn create_entry_row(entry: &desktop::DesktopEntry) -> gtk4::ListBoxRow {
+/// Toggle the overlay window between visible and hidden states.
+fn toggle_window(window: &gtk4::ApplicationWindow) {
+    if window.is_visible() {
+        hide_window(window);
+    } else {
+        window.present();
+    }
+}
+
+/// Hide the window without destroying it.
+fn hide_window(window: &gtk4::ApplicationWindow) {
+    window.set_visible(false);
+}
+
+/// Populate the list box with entries, optionally filtered by a fuzzy query.
+/// When the query is empty, entries are sorted by frecency score then alphabetically.
+/// When a query is present, entries are sorted by combined fuzzy + frecency score.
+fn populate_list(
+    list_box: &gtk4::ListBox,
+    entries: &[desktop::DesktopEntry],
+    tracker: &frecency::FrecencyTracker,
+    matcher: &mut Matcher,
+    query: &str,
+    max_results: usize,
+) {
+    while let Some(row) = list_box.row_at_index(0) {
+        list_box.remove(&row);
+    }
+
+    let now = frecency::now_secs();
+
+    if query.is_empty() {
+        let mut sorted: Vec<_> = entries.iter().enumerate().collect();
+        sorted.sort_by(|(_, a), (_, b)| {
+            let sa = tracker.score_at(&a.exec, now);
+            let sb = tracker.score_at(&b.exec, now);
+            sb.partial_cmp(&sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        for (idx, entry) in sorted.into_iter().take(max_results) {
+            list_box.append(&create_entry_row(idx, entry));
+        }
+    } else {
+        let pattern =
+            Pattern::new(query, CaseMatching::Ignore, Normalization::Smart, AtomKind::Fuzzy);
+
+        let mut scored: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, e)| {
+                let mut buf = Vec::new();
+                let haystack = nucleo_matcher::Utf32Str::new(&e.name, &mut buf);
+                pattern.score(haystack, matcher).map(|s| {
+                    let frecency = tracker.score_at(&e.exec, now);
+                    let combined = f64::from(s) + frecency;
+                    (idx, e, combined)
+                })
+            })
+            .collect();
+        scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (idx, e, _) in scored.into_iter().take(max_results) {
+            list_box.append(&create_entry_row(idx, e));
+        }
+    }
+
+    if let Some(first) = list_box.row_at_index(0) {
+        list_box.select_row(Some(&first));
+    }
+}
+
+/// Create a list box row for a desktop entry, with optional icon.
+/// The index refers to the entry's position in the entries vec for lookup on activation.
+fn create_entry_row(idx: usize, entry: &desktop::DesktopEntry) -> gtk4::ListBoxRow {
     let row = gtk4::ListBoxRow::new();
-    row.set_widget_name(&format!("entry:{}", entry.exec));
+    row.set_widget_name(&format!("idx:{idx}"));
 
     let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
     hbox.set_margin_top(8);
     hbox.set_margin_bottom(8);
     hbox.set_margin_start(12);
     hbox.set_margin_end(12);
+
+    if let Some(ref icon_name) = entry.icon {
+        let icon = gtk4::Image::from_icon_name(icon_name);
+        icon.set_pixel_size(24);
+        icon.add_css_class("psh-launch-icon");
+        hbox.append(&icon);
+    }
 
     let label = gtk4::Label::new(Some(&entry.name));
     label.set_halign(gtk4::Align::Start);
@@ -160,4 +313,51 @@ fn create_entry_row(entry: &desktop::DesktopEntry) -> gtk4::ListBoxRow {
 
     row.set_child(Some(&hbox));
     row
+}
+
+/// Launch an application, respecting the Terminal flag.
+fn launch_app(entry: &desktop::DesktopEntry, terminal_cmd: Option<&str>) {
+    let mut cmd = if entry.terminal {
+        let term = terminal_cmd
+            .map(|s| s.to_string())
+            .or_else(detect_terminal);
+        if let Some(t) = term {
+            tracing::info!("launching terminal app: {t} -e sh -c {}", entry.exec);
+            let mut c = std::process::Command::new(t);
+            c.arg("-e").arg("sh").arg("-c").arg(&entry.exec);
+            c
+        } else {
+            tracing::warn!("no terminal found, launching directly: {}", entry.exec);
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(&entry.exec);
+            c
+        }
+    } else {
+        tracing::info!("launching: {}", entry.exec);
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(&entry.exec);
+        c
+    };
+
+    if let Err(e) = cmd.spawn() {
+        tracing::error!("failed to launch {}: {e}", entry.exec);
+    }
+}
+
+/// Try to find a terminal emulator on the system.
+fn detect_terminal() -> Option<String> {
+    for candidate in ["foot", "alacritty", "kitty", "wezterm", "xterm"] {
+        if which(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Check if a command is available on PATH.
+fn which(cmd: &str) -> bool {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .any(|dir| std::path::Path::new(dir).join(cmd).is_file())
 }

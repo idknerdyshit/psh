@@ -1991,11 +1991,15 @@ dependencies = [
 name = "psh-launch"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "directories",
  "gtk4",
  "gtk4-layer-shell",
  "nucleo-matcher",
  "psh-core",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]

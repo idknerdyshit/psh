@@ -16,3 +16,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 nucleo-matcher = { workspace = true }
 directories = { workspace = true }
+async-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
