@@ -32,7 +32,11 @@ pub fn find_theme(name: &str) -> Option<PathBuf> {
 /// Load and apply a CSS theme file to the default GDK display.
 pub fn apply_css(path: &Path) {
     let provider = CssProvider::new();
-    provider.load_from_path(path.to_str().unwrap_or_default());
+    let Some(path_str) = path.to_str() else {
+        warn!("theme path contains invalid UTF-8: {}", path.display());
+        return;
+    };
+    provider.load_from_path(path_str);
 
     let Some(display) = Display::default() else {
         warn!("no default display, cannot apply CSS theme");

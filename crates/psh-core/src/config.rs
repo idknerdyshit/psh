@@ -256,6 +256,18 @@ pub fn load_from(path: &Path) -> Result<PshConfig> {
     if let Some(ref p) = config.wall.path {
         config.wall.path = Some(expand_tilde(p));
     }
+    if let Some(ref p) = config.lock.background_image {
+        let expanded = expand_tilde(Path::new(p));
+        config.lock.background_image = Some(
+            expanded
+                .to_str()
+                .ok_or_else(|| PshError::Config(format!(
+                    "lock.background_image path contains invalid UTF-8: {}",
+                    expanded.display()
+                )))?
+                .into(),
+        );
+    }
 
     Ok(config)
 }
@@ -289,8 +301,16 @@ pub fn watch(path: PathBuf) -> Result<(broadcast::Sender<PshConfig>, Recommended
             notify::Config::default(),
         )?;
 
-    if let Some(parent) = path.parent().filter(|p| p.exists()) {
-        watcher.watch(parent, RecursiveMode::NonRecursive)?;
+    match path.parent().filter(|p| p.exists()) {
+        Some(parent) => {
+            watcher.watch(parent, RecursiveMode::NonRecursive)?;
+        }
+        None => {
+            warn!(
+                "config directory {} does not exist, config hot-reload disabled",
+                path.parent().map(|p| p.display().to_string()).unwrap_or_default()
+            );
+        }
     }
 
     Ok((tx, watcher))

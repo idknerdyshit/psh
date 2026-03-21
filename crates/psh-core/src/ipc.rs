@@ -22,10 +22,14 @@ pub enum Message {
 }
 
 /// Returns the IPC socket path at `$XDG_RUNTIME_DIR/psh.sock`.
-pub fn socket_path() -> PathBuf {
-    std::env::var("XDG_RUNTIME_DIR")
-        .map(|dir| PathBuf::from(dir).join("psh.sock"))
-        .unwrap_or_else(|_| PathBuf::from("/tmp/psh.sock"))
+///
+/// Returns an error if `XDG_RUNTIME_DIR` is not set, since a secure runtime
+/// directory is required for the IPC socket.
+pub fn socket_path() -> Result<PathBuf> {
+    let dir = std::env::var("XDG_RUNTIME_DIR").map_err(|_| {
+        PshError::Ipc("XDG_RUNTIME_DIR not set — cannot create IPC socket".into())
+    })?;
+    Ok(PathBuf::from(dir).join("psh.sock"))
 }
 
 /// Write a length-prefixed JSON message to any async writer.
@@ -53,6 +57,9 @@ pub async fn recv_from<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Messag
         .map_err(|e| PshError::Ipc(e.to_string()))?;
     let len = u32::from_be_bytes(len_buf) as usize;
 
+    if len == 0 {
+        return Err(PshError::Ipc("empty message".into()));
+    }
     if len > 1024 * 1024 {
         return Err(PshError::Ipc(format!("message too large: {len} bytes")));
     }
@@ -80,19 +87,29 @@ pub async fn recv(stream: &mut UnixStream) -> Result<Message> {
 
 /// Connect to the psh IPC hub as a client.
 pub async fn connect() -> Result<UnixStream> {
-    let path = socket_path();
+    let path = socket_path()?;
     UnixStream::connect(&path)
         .await
         .map_err(|e| PshError::Ipc(format!("failed to connect to {}: {e}", path.display())))
 }
 
 /// Bind the IPC socket as the hub (psh-bar).
+///
+/// Sets socket permissions to `0o600` to prevent other users from connecting.
 pub async fn bind() -> Result<UnixListener> {
-    let path = socket_path();
-    // Remove stale socket if it exists
+    let path = socket_path()?;
+    // Remove stale socket if it exists.
     let _ = std::fs::remove_file(&path);
-    UnixListener::bind(&path)
-        .map_err(|e| PshError::Ipc(format!("failed to bind {}: {e}", path.display())))
+    let listener = UnixListener::bind(&path)
+        .map_err(|e| PshError::Ipc(format!("failed to bind {}: {e}", path.display())))?;
+
+    // Restrict socket permissions to owner only.
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+        tracing::warn!("failed to set socket permissions: {e}");
+    }
+
+    Ok(listener)
 }
 
 #[cfg(test)]
@@ -106,7 +123,7 @@ mod tests {
         let decoded: Message = serde_json::from_str(&json).unwrap();
         match decoded {
             Message::NotificationCount { count } => assert_eq!(count, 42),
-            _ => panic!("wrong variant"),
+            other => panic!("expected NotificationCount, got {other:?}"),
         }
     }
 
