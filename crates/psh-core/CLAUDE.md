@@ -11,6 +11,7 @@ Shared library crate — every other psh component depends on this.
 | `theme.rs` | Complete | GTK4 CSS theme loading, `apply_theme()` / `apply_css()` helpers. Behind `gtk` feature flag. |
 | `dbus.rs` | Complete | zbus connection helpers: `session_bus()`, `session_bus_with_name()`, `system_bus()` |
 | `error.rs` | Complete | `PshError` enum with thiserror, `Result<T>` type alias |
+| `palette.rs` | Complete | Palette extraction from theme CSS, GTK3/GTK4/Qt5ct/Qt6ct color scheme generation |
 | `logging.rs` | Complete | tracing-subscriber init with `PSH_LOG` env filter |
 
 ## Feature flags
@@ -18,7 +19,7 @@ Shared library crate — every other psh component depends on this.
 - `default` — no GTK dependency
 - `gtk` — enables `theme` module, pulls in `gtk4` crate. Used by all GTK components.
 
-psh-wall and psh-lock depend on psh-core *without* the `gtk` feature. All other components use `features = ["gtk"]`.
+psh-wall, psh-lock, and psh-cli depend on psh-core *without* the `gtk` feature. All other components use `features = ["gtk"]`.
 
 ## Adding new config fields
 
@@ -36,6 +37,6 @@ psh-wall and psh-lock depend on psh-core *without* the `gtk` feature. All other 
 
 ## Tests
 
-8 unit tests: 3 in config (default parse, partial parse, missing file), 2 in ipc (roundtrip, all variants), and 3 in clip history (indirectly, via psh-clip).
+17 unit tests: 3 in config (default parse, partial parse, missing file), 2 in ipc (roundtrip, all variants), 3 in clip history (indirectly, via psh-clip), and 9 in palette (CSS parsing, hex roundtrip, GTK/Qt generation).
 
 Run: `cargo test -p psh-core`

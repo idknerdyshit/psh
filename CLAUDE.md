@@ -14,7 +14,7 @@ cargo clippy --workspace
 
 ## Architecture
 
-- **psh-core** — shared library: config, IPC, theming, D-Bus helpers, errors, logging
+- **psh-core** — shared library: config, IPC, theming, palette export, D-Bus helpers, errors, logging
 - **psh-bar** — system bar (GTK4 + layer-shell), acts as the IPC hub
 - **psh-notify** — notification daemon (GTK4 + layer-shell + D-Bus)
 - **psh-polkit** — polkit auth agent (GTK4 + layer-shell + D-Bus)
@@ -82,4 +82,4 @@ See `PLAN.md` for per-phase breakdown.
 - **psh-bar** — full status bar and IPC hub: `BarModule` trait with dynamic loading, bidirectional IPC bridge, 10 modules (clock, battery, workspaces/niri IPC, window title/niri IPC, volume/wpctl, network/NM D-Bus, tray/SNI, launcher btn, clipboard btn, notification count), configurable module layout with sensible defaults, 35 unit tests.
 - **psh-lock** — full screen locker: ext-session-lock-v1 protocol, calloop event loop, SCTK keyboard input (Enter/Escape/Backspace/Ctrl+U), tiny-skia + ab_glyph rendering (clock, date, username, password dots, error messages), PAM auth on dedicated thread via conv_mock, multi-output lock surfaces with hotplug, password zeroization, signal ignoring, 16 unit tests.
 - **psh-idle** — idle monitor daemon: ext-idle-notify-v1 idle detection, logind PrepareForSleep sleep hook via zbus, spawns psh-lock, process tracking, calloop event loop, SIGTERM shutdown.
-- **psh-cli** — CLI control tool (`psh` binary): lock, launcher, clipboard, wall set, reload, ping subcommands via IPC.
+- **psh-cli** — CLI control tool (`psh` binary): lock, launcher, clipboard, wall set, reload, ping subcommands via IPC; `theme apply` for GTK/Qt palette export.

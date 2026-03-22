@@ -155,6 +155,10 @@ pub struct LockConfig {
     pub password_dot_color: String,
     /// Color for error messages as a hex string.
     pub error_color: String,
+    /// Auto-dismiss timeout in seconds (0 = disabled).
+    pub timeout_secs: u64,
+    /// Blur the background (placeholder for future implementation).
+    pub blur_background: bool,
 }
 
 impl Default for LockConfig {
@@ -168,6 +172,8 @@ impl Default for LockConfig {
             font_size: 24.0,
             password_dot_color: "#cdd6f4".into(),
             error_color: "#f38ba8".into(),
+            timeout_secs: 0,
+            blur_background: false,
         }
     }
 }

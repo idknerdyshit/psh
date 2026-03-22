@@ -135,6 +135,7 @@ psh launcher    # toggle the app launcher
 psh clipboard   # show clipboard history
 psh wall set /path/to/image.png   # change wallpaper
 psh reload      # broadcast config-reload signal
+psh theme apply # generate GTK3/GTK4/Qt color overrides from psh palette
 ```
 
 ## IPC
@@ -174,7 +175,7 @@ Packages are available for:
 
 All components are feature-complete. See [PLAN.md](PLAN.md) for the detailed history.
 
-- **psh-core**: Config (with validation + hot-reload), IPC, theming (with hot-reload), D-Bus, logging (16 tests)
+- **psh-core**: Config (with validation + hot-reload), IPC, theming (with hot-reload), palette export, D-Bus, logging (25 tests)
 - **psh-bar**: 10 modules, IPC hub, configurable layout, graceful shutdown (40 tests)
 - **psh-notify**: Full fd.o Notifications spec (14 tests)
 - **psh-polkit**: Full polkit agent with security hardening (12 tests)
@@ -183,7 +184,7 @@ All components are feature-complete. See [PLAN.md](PLAN.md) for the detailed his
 - **psh-wall**: Multi-output wallpaper with 5 modes, config hot-reload
 - **psh-lock**: ext-session-lock-v1, PAM, tiny-skia rendering (16 tests)
 - **psh-idle**: Idle timeout + logind sleep detection, config hot-reload
-- **psh**: CLI control tool (lock, launcher, clipboard, wallpaper, reload, ping)
+- **psh**: CLI control tool (lock, launcher, clipboard, wallpaper, reload, ping, theme apply)
 
 ## License
 

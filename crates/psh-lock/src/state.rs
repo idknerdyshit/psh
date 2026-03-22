@@ -45,6 +45,9 @@ pub struct LockSurface {
     pub scale_factor: i32,
     /// Previous buffer kept alive until the next frame (compositor may still reference it).
     pub pending_buffer: Option<wl_buffer::WlBuffer>,
+    /// Per-surface shm pool (avoids clobbering other surfaces' buffer data).
+    pub pool: Option<RawPool>,
+    pub pool_size: usize,
 }
 
 /// Current authentication state.
@@ -91,10 +94,6 @@ pub struct LockState {
     pub config: LockConfig,
     pub username: String,
     pub render_state: RenderState,
-    /// Persistent shm pool reused across frames.
-    pub pool: Option<RawPool>,
-    /// Size of the current pool allocation.
-    pub pool_size: usize,
 
     // Event loop
     pub conn: Connection,
@@ -151,12 +150,13 @@ impl LockState {
             return;
         };
 
-        // Reuse the shm pool across frames; only reallocate when size increases.
-        if self.pool.is_none() || buf_size > self.pool_size {
+        // Reuse the per-surface shm pool; only reallocate when size increases.
+        let surf = &mut self.lock_surfaces[idx];
+        if surf.pool.is_none() || buf_size > surf.pool_size {
             match RawPool::new(buf_size, &self.shm) {
                 Ok(p) => {
-                    self.pool = Some(p);
-                    self.pool_size = buf_size;
+                    surf.pool = Some(p);
+                    surf.pool_size = buf_size;
                 }
                 Err(e) => {
                     tracing::error!("failed to create shm pool: {e}");
@@ -165,7 +165,7 @@ impl LockState {
             }
         }
 
-        let pool = self.pool.as_mut().unwrap();
+        let pool = self.lock_surfaces[idx].pool.as_mut().unwrap();
         let canvas = pool.mmap();
         canvas[..buf_size].copy_from_slice(pixmap.data());
         // Convert RGBA premultiplied to BGRA (Wayland ARGB8888 on little-endian).
@@ -269,6 +269,8 @@ impl SessionLockHandler for LockState {
                 height: 0,
                 scale_factor: scale,
                 pending_buffer: None,
+                pool: None,
+                pool_size: 0,
             });
         }
 
@@ -559,6 +561,8 @@ impl OutputHandler for LockState {
                 height: 0,
                 scale_factor: scale,
                 pending_buffer: None,
+                pool: None,
+                pool_size: 0,
             });
 
             tracing::info!("created lock surface for hotplugged output");

@@ -39,7 +39,7 @@ On-demand only — launched directly by keybind, `psh-idle`, or any external tri
 ## Key types
 
 - `LockState` — main state: SCTK globals, session lock, keyboard, password, auth state, render state
-- `LockSurface` — per-output lock surface with dimensions and scale factor
+- `LockSurface` — per-output lock surface with dimensions, scale factor, and dedicated shm pool
 - `AuthState` — Idle | Authenticating | Failed(String) | Unlocked
 - `RenderState` — loaded font for text rendering
 - `RenderParams` — snapshot of state needed for rendering (avoids borrow issues)

@@ -230,9 +230,11 @@ fn main() {
                         *max_results_toggle.borrow(),
                     );
                     search_entry_ref.set_text("");
+                    window_ipc.present();
                     search_entry_ref.grab_focus();
+                } else {
+                    hide_window(&window_ipc);
                 }
-                toggle_window(&window_ipc);
             }
         });
 

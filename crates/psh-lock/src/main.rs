@@ -94,8 +94,6 @@ fn main() {
         config: lock_cfg,
         username,
         render_state: RenderState::new(),
-        pool: None,
-        pool_size: 0,
         conn: conn.clone(),
         loop_handle,
         pam_sender,

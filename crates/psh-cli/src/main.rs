@@ -29,6 +29,11 @@ enum Command {
         #[command(subcommand)]
         action: WallAction,
     },
+    /// Manage GTK/Qt themes to match the psh palette.
+    Theme {
+        #[command(subcommand)]
+        action: ThemeAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -40,11 +45,24 @@ enum WallAction {
     },
 }
 
+#[derive(Subcommand)]
+enum ThemeAction {
+    /// Generate and install GTK3/GTK4 CSS overrides and Qt5ct/Qt6ct color
+    /// schemes that match the current psh palette.
+    Apply,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     psh_core::logging::init("psh");
 
     let cli = Cli::parse();
+
+    // Handle commands that don't go through IPC.
+    if let Command::Theme { action } = &cli.command {
+        handle_theme(action);
+        return;
+    }
 
     let msg = match cli.command {
         Command::Lock => Message::LockScreen,
@@ -55,6 +73,7 @@ async fn main() {
         Command::Wall { action } => match action {
             WallAction::Set { path } => Message::SetWallpaper { path },
         },
+        Command::Theme { .. } => unreachable!(),
     };
 
     let wait_for_response = matches!(msg, Message::Ping);
@@ -79,6 +98,43 @@ async fn main() {
             Err(e) => {
                 eprintln!("failed to read response: {e}");
                 std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// Handle `psh theme` subcommands.
+fn handle_theme(action: &ThemeAction) {
+    match action {
+        ThemeAction::Apply => {
+            let config = match psh_core::config::load() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("failed to load config: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            let palette = psh_core::palette::Palette::load(&config.theme.name);
+            if palette.colors.is_empty() {
+                eprintln!("no colors found in theme '{}'", config.theme.name);
+                std::process::exit(1);
+            }
+
+            match palette.apply() {
+                Ok(paths) => {
+                    println!("applied psh palette to system themes:");
+                    for path in &paths {
+                        println!("  {}", path.display());
+                    }
+                    println!();
+                    println!("note: GTK apps will pick up changes on next launch.");
+                    println!("      Qt apps require selecting the 'psh' color scheme in qt5ct/qt6ct.");
+                }
+                Err(e) => {
+                    eprintln!("failed to apply theme: {e}");
+                    std::process::exit(1);
+                }
             }
         }
     }
