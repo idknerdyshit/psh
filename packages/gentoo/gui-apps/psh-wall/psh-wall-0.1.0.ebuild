@@ -394,8 +394,6 @@ DEPEND="
 	dev-libs/wayland
 "
 RDEPEND="${DEPEND}"
-
-
 QA_FLAGS_IGNORED="usr/bin/psh-wall"
 
 src_compile() {

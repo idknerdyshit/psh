@@ -3,6 +3,8 @@
 
 EAPI=8
 
+RUST_MIN_VER="1.85.0"
+
 CRATES="
 	ab_glyph@0.2.32
 	ab_glyph_rasterizer@0.1.10
@@ -375,9 +377,9 @@ CRATES="
 	zvariant_utils@3.3.0
 "
 
-inherit cargo
+inherit cargo systemd
 
-DESCRIPTION="Screen locker for the psh Wayland desktop environment"
+DESCRIPTION="Clipboard manager for the psh Wayland desktop environment"
 HOMEPAGE="https://github.com/idknerdyshit/psh"
 SRC_URI="
 	https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz
@@ -391,24 +393,24 @@ SLOT="0"
 KEYWORDS="~amd64"
 
 DEPEND="
-	dev-libs/wayland
-	sys-libs/pam
+	gui-libs/gtk:4
+	gui-libs/gtk4-layer-shell
 "
 RDEPEND="${DEPEND}"
-QA_FLAGS_IGNORED="usr/bin/psh-lock"
+QA_FLAGS_IGNORED="usr/bin/psh-clip"
 
 src_compile() {
-	cargo_src_compile --bin psh-lock
+	cargo_src_compile --bin psh-clip
 }
 
 src_install() {
-	dobin "$(cargo_target_dir)/psh-lock"
-
+	dobin "$(cargo_target_dir)/psh-clip"
+	systemd_douserunit "${S}/systemd/psh-clip.service"
 }
 
 pkg_postinst() {
-	elog "psh-lock uses ext-session-lock-v1 — your compositor must support it."
-	elog "PAM authentication is used; ensure your PAM config is correct."
+	elog "psh-clip monitors the clipboard via zwlr-data-control-v1."
+	elog "Your compositor must support this protocol (niri, sway, etc.)."
 	elog ""
-	elog "Lock manually: psh lock"
+	elog "Bind a key in your compositor to: psh clipboard"
 }

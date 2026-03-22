@@ -3,6 +3,8 @@
 
 EAPI=8
 
+RUST_MIN_VER="1.85.0"
+
 CRATES="
 	ab_glyph@0.2.32
 	ab_glyph_rasterizer@0.1.10

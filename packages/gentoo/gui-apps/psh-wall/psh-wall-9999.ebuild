@@ -3,6 +3,8 @@
 
 EAPI=8
 
+RUST_MIN_VER="1.85.0"
+
 inherit cargo git-r3 systemd
 
 DESCRIPTION="Wallpaper manager for the psh Wayland desktop environment"

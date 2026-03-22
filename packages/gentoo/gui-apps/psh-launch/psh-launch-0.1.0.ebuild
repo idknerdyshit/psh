@@ -395,8 +395,6 @@ DEPEND="
 	gui-libs/gtk4-layer-shell
 "
 RDEPEND="${DEPEND}"
-
-
 QA_FLAGS_IGNORED="usr/bin/psh-launch"
 
 src_compile() {

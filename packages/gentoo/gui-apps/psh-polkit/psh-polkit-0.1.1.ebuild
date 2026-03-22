@@ -3,6 +3,8 @@
 
 EAPI=8
 
+RUST_MIN_VER="1.85.0"
+
 CRATES="
 	ab_glyph@0.2.32
 	ab_glyph_rasterizer@0.1.10
@@ -375,9 +377,9 @@ CRATES="
 	zvariant_utils@3.3.0
 "
 
-inherit cargo
+inherit cargo systemd
 
-DESCRIPTION="Screen locker for the psh Wayland desktop environment"
+DESCRIPTION="Polkit authentication agent for the psh Wayland desktop environment"
 HOMEPAGE="https://github.com/idknerdyshit/psh"
 SRC_URI="
 	https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz
@@ -391,24 +393,33 @@ SLOT="0"
 KEYWORDS="~amd64"
 
 DEPEND="
-	dev-libs/wayland
-	sys-libs/pam
+	gui-libs/gtk:4
+	gui-libs/gtk4-layer-shell
+	sys-apps/dbus
+	sys-auth/polkit
 "
-RDEPEND="${DEPEND}"
-QA_FLAGS_IGNORED="usr/bin/psh-lock"
+# psh-polkit registers as the session polkit authentication agent.
+# Only one agent can be registered per session.
+RDEPEND="
+	${DEPEND}
+	!!gnome-extra/polkit-gnome
+	!!kde-plasma/polkit-kde-agent
+	!!lxqt-base/lxqt-policykit
+"
+QA_FLAGS_IGNORED="usr/bin/psh-polkit"
 
 src_compile() {
-	cargo_src_compile --bin psh-lock
+	cargo_src_compile --bin psh-polkit
 }
 
 src_install() {
-	dobin "$(cargo_target_dir)/psh-lock"
-
+	dobin "$(cargo_target_dir)/psh-polkit"
+	systemd_douserunit "${S}/systemd/psh-polkit.service"
 }
 
 pkg_postinst() {
-	elog "psh-lock uses ext-session-lock-v1 — your compositor must support it."
-	elog "PAM authentication is used; ensure your PAM config is correct."
+	elog "psh-polkit registers as the session polkit authentication agent."
+	elog "Only one polkit agent can be active per session."
 	elog ""
-	elog "Lock manually: psh lock"
+	elog "Test with: pkexec ls"
 }

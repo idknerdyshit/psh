@@ -404,8 +404,6 @@ RDEPEND="
 	!!kde-plasma/polkit-kde-agent
 	!!lxqt-base/lxqt-policykit
 "
-
-
 QA_FLAGS_IGNORED="usr/bin/psh-polkit"
 
 src_compile() {

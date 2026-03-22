@@ -396,8 +396,6 @@ DEPEND="
 	sys-apps/dbus
 "
 RDEPEND="${DEPEND}"
-
-
 QA_FLAGS_IGNORED="usr/bin/psh-bar"
 
 src_compile() {

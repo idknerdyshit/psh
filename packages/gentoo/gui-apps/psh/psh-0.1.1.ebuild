@@ -3,6 +3,8 @@
 
 EAPI=8
 
+RUST_MIN_VER="1.85.0"
+
 CRATES="
 	ab_glyph@0.2.32
 	ab_glyph_rasterizer@0.1.10
@@ -377,7 +379,7 @@ CRATES="
 
 inherit cargo
 
-DESCRIPTION="Screen locker for the psh Wayland desktop environment"
+DESCRIPTION="psh Wayland desktop environment (meta-package)"
 HOMEPAGE="https://github.com/idknerdyshit/psh"
 SRC_URI="
 	https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz
@@ -390,25 +392,53 @@ LICENSE="GPL-3+"
 SLOT="0"
 KEYWORDS="~amd64"
 
-DEPEND="
-	dev-libs/wayland
-	sys-libs/pam
+RDEPEND="
+	=gui-apps/psh-bar-${PV}
+	=gui-apps/psh-notify-${PV}
+	=gui-apps/psh-polkit-${PV}
+	=gui-apps/psh-launch-${PV}
+	=gui-apps/psh-clip-${PV}
+	=gui-apps/psh-wall-${PV}
+	=gui-apps/psh-lock-${PV}
+	=gui-apps/psh-idle-${PV}
 "
-RDEPEND="${DEPEND}"
-QA_FLAGS_IGNORED="usr/bin/psh-lock"
+PDEPEND="virtual/notification-daemon"
+
+QA_FLAGS_IGNORED="usr/bin/psh"
 
 src_compile() {
-	cargo_src_compile --bin psh-lock
+	cargo_src_compile --bin psh
 }
 
 src_install() {
-	dobin "$(cargo_target_dir)/psh-lock"
+	# Install the psh CLI control binary
+	dobin "$(cargo_target_dir)/psh"
 
+	# Install the systemd target that ties all components together
+	insinto /usr/lib/systemd/user
+	doins "${S}/systemd/psh.target"
+
+	# Install shared assets (themes)
+	insinto /usr/share/psh/themes
+	doins "${S}/assets/themes/"*
+
+	# Install example configs
+	insinto /usr/share/doc/${PF}
+	doins "${S}/config/psh.toml"
+	doins "${S}/config/niri.kdl"
 }
 
 pkg_postinst() {
-	elog "psh-lock uses ext-session-lock-v1 — your compositor must support it."
-	elog "PAM authentication is used; ensure your PAM config is correct."
+	elog "To start the psh desktop environment:"
+	elog "  systemctl --user enable --now psh.target"
 	elog ""
-	elog "Lock manually: psh lock"
+	elog "Example configs installed to /usr/share/doc/${PF}/:"
+	elog "  psh.toml  — psh component configuration"
+	elog "  niri.kdl  — example niri compositor config with psh keybindings"
+	elog ""
+	elog "Copy to get started:"
+	elog "  mkdir -p ~/.config/psh"
+	elog "  cp /usr/share/doc/${PF}/psh.toml ~/.config/psh/"
+	elog ""
+	elog "CLI control tool: psh --help"
 }

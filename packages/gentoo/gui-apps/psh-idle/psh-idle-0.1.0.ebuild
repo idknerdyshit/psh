@@ -397,8 +397,6 @@ DEPEND="
 RDEPEND="${DEPEND}
 	gui-apps/psh-lock
 "
-
-
 QA_FLAGS_IGNORED="usr/bin/psh-idle"
 
 src_compile() {

@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/psh-de/psh"
@@ -55,3 +55,8 @@ ab_glyph = "0.2"
 shlex = "1"
 serde_ignored = "0.1"
 clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
