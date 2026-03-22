@@ -10,6 +10,7 @@ members = [
     "crates/psh-lock",
     "crates/psh-clip",
     "crates/psh-idle",
+    "crates/psh-cli",
 ]
 
 [workspace.package]
@@ -52,3 +53,5 @@ system-tray = "0.8"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 ab_glyph = "0.2"
 shlex = "1"
+serde_ignored = "0.1"
+clap = { version = "4", features = ["derive"] }

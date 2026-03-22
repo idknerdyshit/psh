@@ -395,7 +395,6 @@ DEPEND="
 "
 RDEPEND="${DEPEND}"
 
-BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-wall"
 

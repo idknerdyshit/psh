@@ -26,7 +26,6 @@ RDEPEND="
 	!!kde-plasma/polkit-kde-agent
 	!!lxqt-base/lxqt-policykit
 "
-BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-polkit"
 

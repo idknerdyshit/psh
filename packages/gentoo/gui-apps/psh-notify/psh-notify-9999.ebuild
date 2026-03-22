@@ -25,7 +25,6 @@ RDEPEND="
 	!!gui-apps/mako
 "
 PDEPEND="virtual/notification-daemon"
-BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-notify"
 

@@ -400,7 +400,6 @@ RDEPEND="
 	=gui-apps/psh-lock-${PV}
 	=gui-apps/psh-idle-${PV}
 "
-BDEPEND="virtual/rust"
 PDEPEND="virtual/notification-daemon"
 
 QA_FLAGS_IGNORED="usr/bin/psh"

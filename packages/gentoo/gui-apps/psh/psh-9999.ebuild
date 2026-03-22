@@ -22,7 +22,6 @@ RDEPEND="
 	gui-apps/psh-lock
 	gui-apps/psh-idle
 "
-BDEPEND="virtual/rust"
 PDEPEND="virtual/notification-daemon"
 
 QA_FLAGS_IGNORED="usr/bin/psh"

@@ -17,7 +17,6 @@ DEPEND="
 	sys-libs/pam
 "
 RDEPEND="${DEPEND}"
-BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-lock"
 

@@ -19,7 +19,6 @@ DEPEND="
 RDEPEND="${DEPEND}
 	gui-apps/psh-lock
 "
-BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-idle"
 

@@ -18,7 +18,6 @@ DEPEND="
 	sys-apps/dbus
 "
 RDEPEND="${DEPEND}"
-BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-bar"
 

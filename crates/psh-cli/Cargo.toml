@@ -1,0 +1,15 @@
+[package]
+name = "psh-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "psh"
+path = "src/main.rs"
+
+[dependencies]
+psh-core = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "macros"] }
+clap = { workspace = true }
+tracing = { workspace = true }

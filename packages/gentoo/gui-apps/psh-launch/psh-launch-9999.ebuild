@@ -17,7 +17,6 @@ DEPEND="
 	gui-libs/gtk4-layer-shell
 "
 RDEPEND="${DEPEND}"
-BDEPEND="virtual/rust"
 
 QA_FLAGS_IGNORED="usr/bin/psh-launch"
 
