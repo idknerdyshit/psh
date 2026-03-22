@@ -70,9 +70,8 @@ impl NotificationManager {
         stack.add_css_class("psh-notify-stack");
         window.set_child(Some(&stack));
 
-        // Start hidden — shown when first notification arrives
-        window.set_visible(false);
-        window.present();
+        // Do not present yet — the window is shown on first notification
+        // and hidden again when all notifications are dismissed.
 
         Rc::new(RefCell::new(Self {
             notifications: Vec::new(),
@@ -278,7 +277,11 @@ impl NotificationManager {
 
     /// Show the overlay window when notifications exist, hide when empty.
     fn update_visibility(&self) {
-        self.window.set_visible(!self.notifications.is_empty());
+        if self.notifications.is_empty() {
+            self.window.set_visible(false);
+        } else {
+            self.window.present();
+        }
     }
 
     fn send_count(&self) {

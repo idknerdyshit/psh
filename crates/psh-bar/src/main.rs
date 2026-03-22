@@ -82,7 +82,7 @@ fn main() {
         // Channel: modules -> IPC hub (outbound to clients)
         let (outbound_tx, outbound_rx) = async_channel::bounded::<Message>(64);
 
-        // Per-module inbound channels: IPC hub -> modules
+        // Per-module inbound channels: IPC hub -> modules (across all monitors)
         let mut inbound_senders: Vec<async_channel::Sender<Message>> = Vec::new();
 
         // Build module lists from config or defaults
@@ -90,35 +90,84 @@ fn main() {
         let center_names = module_names(&bar_cfg.modules_center, modules::DEFAULT_CENTER);
         let right_names = module_names(&bar_cfg.modules_right, modules::DEFAULT_RIGHT);
 
-        // Build sections
-        let left = build_section(
-            &left_names,
-            &bar_cfg,
-            &outbound_tx,
-            &mut inbound_senders,
-            &rt_handle,
-        );
-        left.set_margin_start(8);
-        left.add_css_class("psh-bar-left");
+        let height = bar_cfg.height.unwrap_or(32) as i32;
 
-        let center = build_section(
-            &center_names,
-            &bar_cfg,
-            &outbound_tx,
-            &mut inbound_senders,
-            &rt_handle,
-        );
-        center.add_css_class("psh-bar-center");
+        // Enumerate monitors and create one bar window per output.
+        let display = gtk4::gdk::Display::default().expect("no GDK display");
+        let monitors = display.monitors();
+        let n_monitors = monitors.n_items();
 
-        let right = build_section(
-            &right_names,
-            &bar_cfg,
-            &outbound_tx,
-            &mut inbound_senders,
-            &rt_handle,
-        );
-        right.set_margin_end(8);
-        right.add_css_class("psh-bar-right");
+        let monitor_count = n_monitors.max(1);
+        for i in 0..monitor_count {
+            let monitor = if n_monitors > 1 {
+                monitors
+                    .item(i)
+                    .and_then(|obj| obj.downcast::<gtk4::gdk::Monitor>().ok())
+            } else {
+                None
+            };
+
+            // Each monitor gets its own module instances and widget tree.
+            let left = build_section(
+                &left_names,
+                &bar_cfg,
+                &outbound_tx,
+                &mut inbound_senders,
+                &rt_handle,
+            );
+            left.set_margin_start(8);
+            left.add_css_class("psh-bar-left");
+
+            let center = build_section(
+                &center_names,
+                &bar_cfg,
+                &outbound_tx,
+                &mut inbound_senders,
+                &rt_handle,
+            );
+            center.add_css_class("psh-bar-center");
+
+            let right = build_section(
+                &right_names,
+                &bar_cfg,
+                &outbound_tx,
+                &mut inbound_senders,
+                &rt_handle,
+            );
+            right.set_margin_end(8);
+            right.add_css_class("psh-bar-right");
+
+            let bar = gtk4::CenterBox::new();
+            bar.add_css_class("psh-bar");
+            bar.set_start_widget(Some(&left));
+            bar.set_center_widget(Some(&center));
+            bar.set_end_widget(Some(&right));
+
+            let window = gtk4::ApplicationWindow::builder()
+                .application(app)
+                .build();
+
+            window.init_layer_shell();
+            window.set_layer(gtk4_layer_shell::Layer::Top);
+            window.set_anchor(gtk4_layer_shell::Edge::Left, true);
+            window.set_anchor(gtk4_layer_shell::Edge::Right, true);
+
+            match bar_cfg.position {
+                BarPosition::Top => window.set_anchor(gtk4_layer_shell::Edge::Top, true),
+                BarPosition::Bottom => window.set_anchor(gtk4_layer_shell::Edge::Bottom, true),
+            }
+
+            window.set_default_height(height);
+            window.auto_exclusive_zone_enable();
+            window.set_namespace(Some("psh-bar"));
+
+            if let Some(ref mon) = monitor {
+                window.set_monitor(Some(mon));
+            }
+
+            window.set_child(Some(&bar));
+            window.present();
+        }
 
         // Spawn IPC hub on the shared runtime
         rt_handle.spawn(async move {
@@ -126,31 +175,6 @@ fn main() {
                 tracing::error!("IPC hub error: {e}");
             }
         });
-
-        let window = gtk4::ApplicationWindow::builder().application(app).build();
-
-        window.init_layer_shell();
-        window.set_layer(gtk4_layer_shell::Layer::Top);
-        window.set_anchor(gtk4_layer_shell::Edge::Left, true);
-        window.set_anchor(gtk4_layer_shell::Edge::Right, true);
-
-        match bar_cfg.position {
-            BarPosition::Top => window.set_anchor(gtk4_layer_shell::Edge::Top, true),
-            BarPosition::Bottom => window.set_anchor(gtk4_layer_shell::Edge::Bottom, true),
-        }
-
-        let height = bar_cfg.height.unwrap_or(32);
-        window.set_default_height(height as i32);
-        window.set_namespace(Some("psh-bar"));
-
-        let bar = gtk4::CenterBox::new();
-        bar.add_css_class("psh-bar");
-        bar.set_start_widget(Some(&left));
-        bar.set_center_widget(Some(&center));
-        bar.set_end_widget(Some(&right));
-
-        window.set_child(Some(&bar));
-        window.present();
     });
 
     app.connect_shutdown(|_| {

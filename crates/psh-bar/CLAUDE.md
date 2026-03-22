@@ -38,6 +38,7 @@ Modules that need async data spawn their own background tasks inside `widget()` 
 
 | Name | File | Description |
 |------|------|-------------|
+| `claude` | `modules/claude.rs` | Claude.ai usage quota (session key auth, configurable format) |
 | `clock` | `modules/clock.rs` | Live-updating `%H:%M:%S` label |
 | `battery` | `modules/battery.rs` | Sysfs battery reader, configurable device |
 | `workspaces` | `modules/workspaces.rs` | Niri IPC workspace buttons (ext-workspace-v1 fallback stub) |
@@ -70,11 +71,15 @@ position = "top"     # top | bottom
 # max_title_length = 50
 # volume_step = 5
 # battery_device = "BAT0"
+# claude_session_key = "sk-ant-sid01-..."  # or CLAUDE_SESSION_KEY env var
+# claude_display = "percent"               # "percent" | "both"
+# claude_poll_interval = 120               # seconds
 ```
 
 ## Tests
 
-35 unit tests covering:
+50 unit tests covering:
+- Claude usage parsing, formatting, CSS class thresholds, display format
 - Module registry (create known/unknown, default lists, name consistency)
 - Battery sysfs parsing and icon selection
 - Volume wpctl output parsing

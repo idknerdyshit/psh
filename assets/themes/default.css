@@ -84,6 +84,25 @@
     color: @psh-overlay0;
 }
 
+/* Claude usage */
+.psh-bar-claude {
+    color: @psh-mauve;
+    padding: 0 8px;
+}
+
+.psh-bar-claude.low {
+    color: @psh-yellow;
+}
+
+.psh-bar-claude.critical {
+    color: @psh-red;
+}
+
+.psh-bar-claude.error {
+    color: @psh-overlay0;
+    font-style: italic;
+}
+
 /* Tray */
 .psh-bar-tray {
     padding: 0 4px;

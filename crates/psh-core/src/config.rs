@@ -58,6 +58,13 @@ pub struct BarConfig {
     pub volume_step: Option<u32>,
     /// Sysfs battery device name (default: "BAT0").
     pub battery_device: Option<String>,
+    /// Claude.ai session key for the claude bar module.
+    /// Falls back to `CLAUDE_SESSION_KEY` env var if not set.
+    pub claude_session_key: Option<String>,
+    /// Claude module display format: "percent" (default) or "both".
+    pub claude_display: Option<String>,
+    /// Claude module poll interval in seconds (default: 120).
+    pub claude_poll_interval: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

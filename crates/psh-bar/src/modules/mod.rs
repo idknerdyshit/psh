@@ -4,6 +4,7 @@
 //! Modules receive a [`ModuleContext`] providing IPC channels and configuration.
 
 pub mod battery;
+pub mod claude;
 pub mod clipboard_btn;
 pub mod clock;
 pub mod ipc_button;
@@ -63,6 +64,7 @@ pub const DEFAULT_RIGHT: &[&str] = &["volume", "network", "battery", "tray"];
 /// All known module names (used by registry consistency tests).
 #[cfg(test)]
 pub const KNOWN_MODULES: &[&str] = &[
+    "claude",
     "clock",
     "battery",
     "workspaces",
@@ -80,6 +82,7 @@ pub const KNOWN_MODULES: &[&str] = &[
 /// Returns `None` if the name is not a known module, logging a warning.
 pub fn create_module(name: &str) -> Option<Box<dyn BarModule>> {
     match name {
+        "claude" => Some(Box::new(claude::ClaudeModule)),
         "clock" => Some(Box::new(clock::ClockModule)),
         "battery" => Some(Box::new(battery::BatteryModule)),
         "workspaces" => Some(Box::new(workspaces::WorkspacesModule)),

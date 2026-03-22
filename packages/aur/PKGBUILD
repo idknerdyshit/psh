@@ -1,6 +1,6 @@
 # Maintainer: psh developers
 pkgname=psh
-pkgver=0.1.0
+pkgver=0.1.2
 pkgrel=1
 pkgdesc='Wayland desktop environment component suite'
 arch=('x86_64')

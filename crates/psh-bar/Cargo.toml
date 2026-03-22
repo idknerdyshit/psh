@@ -21,3 +21,4 @@ serde_json = { workspace = true }
 niri-ipc = { workspace = true }
 system-tray = { workspace = true }
 futures-util = { workspace = true }
+reqwest = { workspace = true }
