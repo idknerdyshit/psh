@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<longdescription>
+		Idle monitor daemon for the psh Wayland desktop environment.
+		Monitors user idle via ext-idle-notify-v1 and system sleep via
+		logind PrepareForSleep, spawning psh-lock when triggered.
+	</longdescription>
+	<upstream>
+		<remote-id type="github">idknerdyshit/psh</remote-id>
+	</upstream>
+</pkgmetadata>

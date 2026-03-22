@@ -377,7 +377,7 @@ CRATES="
 
 inherit cargo systemd
 
-DESCRIPTION="Polkit authentication agent for the psh Wayland desktop environment"
+DESCRIPTION="Idle monitor daemon for the psh Wayland desktop environment"
 HOMEPAGE="https://github.com/idknerdyshit/psh"
 SRC_URI="
 	https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz
@@ -391,36 +391,31 @@ SLOT="0"
 KEYWORDS="~amd64"
 
 DEPEND="
-	gui-libs/gtk:4
-	gui-libs/gtk4-layer-shell
-	sys-apps/dbus
+	dev-libs/wayland
 	sys-auth/polkit
 "
-# psh-polkit registers as the session polkit authentication agent.
-# Only one agent can be registered per session.
-RDEPEND="
-	${DEPEND}
-	!!gnome-extra/polkit-gnome
-	!!kde-plasma/polkit-kde-agent
-	!!lxqt-base/lxqt-policykit
+RDEPEND="${DEPEND}
+	gui-apps/psh-lock
 "
 
 BDEPEND="virtual/rust"
 
-QA_FLAGS_IGNORED="usr/bin/psh-polkit"
+QA_FLAGS_IGNORED="usr/bin/psh-idle"
 
 src_compile() {
-	cargo_src_compile --bin psh-polkit
+	cargo_src_compile --bin psh-idle
 }
 
 src_install() {
-	dobin "$(cargo_target_dir)/psh-polkit"
-	systemd_douserunit "${S}/systemd/psh-polkit.service"
+	dobin "$(cargo_target_dir)/psh-idle"
+	systemd_douserunit "${S}/systemd/psh-idle.service"
 }
 
 pkg_postinst() {
-	elog "psh-polkit registers as the session polkit authentication agent."
-	elog "Only one polkit agent can be active per session."
+	elog "psh-idle spawns psh-lock on idle timeout and before system sleep."
 	elog ""
-	elog "Test with: pkexec ls"
+	elog "Configure in ~/.config/psh/psh.toml:"
+	elog "  [idle]"
+	elog "  idle_timeout_secs = 300  # 0 to disable"
+	elog "  lock_on_sleep = true"
 }
