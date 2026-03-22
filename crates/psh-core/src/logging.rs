@@ -9,5 +9,6 @@ pub fn init(component: &str) {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .init();
+        .try_init()
+        .ok();
 }

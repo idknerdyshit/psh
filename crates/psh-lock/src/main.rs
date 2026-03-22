@@ -11,16 +11,13 @@ mod state;
 use smithay_client_toolkit::{
     compositor::CompositorState,
     output::OutputState,
-    reexports::{
-        calloop::EventLoop,
-        calloop_wayland_source::WaylandSource,
-    },
+    reexports::{calloop::EventLoop, calloop_wayland_source::WaylandSource},
     registry::RegistryState,
-    seat::{keyboard::Modifiers, SeatState},
+    seat::{SeatState, keyboard::Modifiers},
     session_lock::SessionLockState,
     shm::Shm,
 };
-use wayland_client::{globals::registry_queue_init, Connection};
+use wayland_client::{Connection, globals::registry_queue_init};
 
 use psh_core::config;
 
@@ -48,13 +45,11 @@ fn main() {
 
     // Connect to Wayland.
     let conn = Connection::connect_to_env().expect("failed to connect to wayland");
-    let (globals, event_queue) =
-        registry_queue_init(&conn).expect("failed to init registry");
+    let (globals, event_queue) = registry_queue_init(&conn).expect("failed to init registry");
     let qh = event_queue.handle();
 
     // Bind globals.
-    let compositor =
-        CompositorState::bind(&globals, &qh).expect("wl_compositor not available");
+    let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor not available");
     let shm = Shm::bind(&globals, &qh).expect("wl_shm not available");
     let session_lock_state = SessionLockState::new(&globals, &qh);
 
@@ -98,6 +93,8 @@ fn main() {
         config: lock_cfg,
         username,
         render_state: RenderState::new(),
+        pool: None,
+        pool_size: 0,
         conn: conn.clone(),
         loop_handle,
         pam_sender,

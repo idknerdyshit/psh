@@ -230,7 +230,10 @@ fn add_or_update_tray_item(
     let cmd_tx = cmd_tx.clone();
     let address = info.address.clone();
     btn.connect_clicked(move |_| {
-        if cmd_tx.try_send(TrayCommand::Activate(address.clone())).is_err() {
+        if cmd_tx
+            .try_send(TrayCommand::Activate(address.clone()))
+            .is_err()
+        {
             tracing::debug!("tray command channel full (activate)");
         }
     });
@@ -243,7 +246,7 @@ fn set_pixmap_icon(btn: &gtk4::Button, info: &TrayItemInfo) {
     if let Some((width, height, pixels)) = info
         .icon_pixmap
         .as_ref()
-        .filter(|(w, h, p)| *w > 0 && *h > 0 && p.len() as i32 >= w * h * 4)
+        .filter(|(w, h, p)| *w > 0 && *h > 0 && p.len() >= (*w as usize) * (*h as usize) * 4)
     {
         // SNI pixmaps are ARGB32 in network byte order (big-endian).
         let bytes = glib::Bytes::from(pixels);

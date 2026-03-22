@@ -5,7 +5,7 @@ use async_channel::{Receiver, Sender};
 use secrecy::SecretString;
 use zbus::connection::Builder as ConnectionBuilder;
 use zbus::zvariant::OwnedValue;
-use zbus::{interface, Connection};
+use zbus::{Connection, interface};
 
 use psh_core::Result;
 
@@ -76,11 +76,14 @@ struct SessionGuard {
 impl Drop for SessionGuard {
     fn drop(&mut self) {
         let sessions = self.sessions.clone();
-        let cookie = self.cookie.clone();
-        // Use try_lock to avoid blocking in drop; if the lock is held, the
-        // dispatcher task will eventually clean up stale entries.
+        let cookie = std::mem::take(&mut self.cookie);
+        // Try an immediate lock first; if contended, spawn an async cleanup task.
         if let Ok(mut map) = sessions.try_lock() {
             map.remove(&cookie);
+        } else if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                sessions.lock().await.remove(&cookie);
+            });
         }
     }
 }
@@ -88,6 +91,9 @@ impl Drop for SessionGuard {
 #[interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
 impl PolkitAgent {
     /// Called by polkitd when a privileged action needs authentication.
+    ///
+    /// Returns a D-Bus error on early failures so polkitd doesn't hang waiting
+    /// for an `AuthenticationAgentResponse2` that will never come.
     async fn begin_authentication(
         &self,
         action_id: &str,
@@ -96,12 +102,14 @@ impl PolkitAgent {
         _details: HashMap<String, String>,
         cookie: &str,
         identities: Vec<(String, HashMap<String, OwnedValue>)>,
-    ) {
+    ) -> zbus::fdo::Result<()> {
         tracing::info!("polkit auth request: action={action_id} cookie={cookie}");
 
         let Some((uid, identity)) = authority::extract_uid(&identities) else {
             tracing::error!("no unix-user identity found in auth request");
-            return;
+            return Err(zbus::fdo::Error::Failed(
+                "no unix-user identity found".into(),
+            ));
         };
 
         // Resolve username once and reuse for both display and authentication
@@ -121,13 +129,16 @@ impl PolkitAgent {
         // Show the dialog
         if self.tx.send(AgentToGtk::ShowAuth(req)).await.is_err() {
             tracing::error!("GTK channel closed");
-            return;
+            return Err(zbus::fdo::Error::Failed("agent GTK channel closed".into()));
         }
 
         // Register a per-session channel so responses are routed correctly even
         // when multiple authentication sessions are active concurrently.
         let (session_tx, mut session_rx) = tokio::sync::mpsc::channel::<AuthResponse>(1);
-        self.sessions.lock().await.insert(cookie.clone(), session_tx);
+        self.sessions
+            .lock()
+            .await
+            .insert(cookie.clone(), session_tx);
         let _guard = SessionGuard {
             cookie: cookie.clone(),
             sessions: Arc::clone(&self.sessions),
@@ -143,7 +154,7 @@ impl PolkitAgent {
                         Some(r) => r,
                         None => {
                             tracing::error!("session channel closed for cookie {cookie}");
-                            return;
+                            return Ok(());
                         }
                     }
                 }
@@ -152,53 +163,67 @@ impl PolkitAgent {
                     let _ = self.tx.send(AgentToGtk::AuthCancelled {
                         cookie: cookie.clone(),
                     }).await;
-                    return;
+                    return Ok(());
                 }
             };
 
             // User clicked Cancel
             let Some(password) = response.password else {
                 tracing::info!("auth cancelled by user for cookie {cookie}");
-                return;
+                return Ok(());
             };
 
             attempts += 1;
 
-            // Try to authenticate via polkit-agent-helper-1
-            match authority::authenticate(&username, &password).await {
+            // Try to authenticate via polkit-agent-helper-1.
+            // Wrap in select! so system cancellation can interrupt a running auth.
+            let auth_result = tokio::select! {
+                result = authority::authenticate(&username, &password) => result,
+                _ = self.wait_for_cancel(&cookie) => {
+                    tracing::info!("auth cancelled by system during authentication for cookie {cookie}");
+                    let _ = self.tx.send(AgentToGtk::AuthCancelled {
+                        cookie: cookie.clone(),
+                    }).await;
+                    return Ok(());
+                }
+            };
+
+            match auth_result {
                 Ok(true) => {
                     if let Err(e) = authority::respond(&self.conn, &cookie, &identity).await {
                         tracing::error!("failed to send auth response to polkitd: {e}");
                     }
-                    let _ = self.tx.send(AgentToGtk::AuthSucceeded {
-                        cookie,
-                    }).await;
-                    return;
+                    let _ = self.tx.send(AgentToGtk::AuthSucceeded { cookie }).await;
+                    return Ok(());
                 }
                 Ok(false) => {
-                    tracing::warn!("auth failed for cookie {cookie} (attempt {attempts}/{MAX_ATTEMPTS})");
+                    tracing::warn!(
+                        "auth failed for cookie {cookie} (attempt {attempts}/{MAX_ATTEMPTS})"
+                    );
                     if attempts >= MAX_ATTEMPTS {
-                        let _ = self.tx.send(AgentToGtk::AuthCancelled {
-                            cookie,
-                        }).await;
-                        return;
+                        let _ = self.tx.send(AgentToGtk::AuthCancelled { cookie }).await;
+                        return Ok(());
                     }
-                    let _ = self.tx.send(AgentToGtk::AuthFailed {
-                        cookie: cookie.clone(),
-                        message: "Authentication failed. Please try again.".to_string(),
-                    }).await;
+                    let _ = self
+                        .tx
+                        .send(AgentToGtk::AuthFailed {
+                            cookie: cookie.clone(),
+                            message: "Authentication failed. Please try again.".to_string(),
+                        })
+                        .await;
                 }
                 Err(e) => {
                     tracing::error!("auth helper error: {e}");
-                    let _ = self.tx.send(AgentToGtk::AuthFailed {
-                        cookie: cookie.clone(),
-                        message: "An internal error occurred. Please try again.".to_string(),
-                    }).await;
+                    let _ = self
+                        .tx
+                        .send(AgentToGtk::AuthFailed {
+                            cookie: cookie.clone(),
+                            message: "An internal error occurred. Please try again.".to_string(),
+                        })
+                        .await;
                     if attempts >= MAX_ATTEMPTS {
-                        let _ = self.tx.send(AgentToGtk::AuthCancelled {
-                            cookie,
-                        }).await;
-                        return;
+                        let _ = self.tx.send(AgentToGtk::AuthCancelled { cookie }).await;
+                        return Ok(());
                     }
                 }
             }
@@ -262,9 +287,7 @@ pub async fn run(
     // Build the system bus connection and serve our agent interface.
     // We need the connection before constructing PolkitAgent (for the Arc), so we
     // build in two steps: first get a plain connection, then serve the interface.
-    let conn = ConnectionBuilder::system()?
-        .build()
-        .await?;
+    let conn = ConnectionBuilder::system()?.build().await?;
 
     let conn = Arc::new(conn);
 

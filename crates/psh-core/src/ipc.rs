@@ -26,9 +26,8 @@ pub enum Message {
 /// Returns an error if `XDG_RUNTIME_DIR` is not set, since a secure runtime
 /// directory is required for the IPC socket.
 pub fn socket_path() -> Result<PathBuf> {
-    let dir = std::env::var("XDG_RUNTIME_DIR").map_err(|_| {
-        PshError::Ipc("XDG_RUNTIME_DIR not set — cannot create IPC socket".into())
-    })?;
+    let dir = std::env::var("XDG_RUNTIME_DIR")
+        .map_err(|_| PshError::Ipc("XDG_RUNTIME_DIR not set — cannot create IPC socket".into()))?;
     Ok(PathBuf::from(dir).join("psh.sock"))
 }
 
@@ -99,7 +98,16 @@ pub async fn connect() -> Result<UnixStream> {
 pub async fn bind() -> Result<UnixListener> {
     let path = socket_path()?;
     // Remove stale socket if it exists.
-    let _ = std::fs::remove_file(&path);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(PshError::Ipc(format!(
+                "cannot remove stale socket {}: {e}",
+                path.display()
+            )));
+        }
+    }
     let listener = UnixListener::bind(&path)
         .map_err(|e| PshError::Ipc(format!("failed to bind {}: {e}", path.display())))?;
 

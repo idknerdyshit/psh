@@ -6,30 +6,25 @@
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_output, delegate_registry,
-    delegate_seat, delegate_session_lock, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_output, delegate_registry, delegate_seat,
+    delegate_session_lock, delegate_shm,
     output::{OutputHandler, OutputState},
-    reexports::{
-        calloop::{
-            channel::Sender,
-            timer::{TimeoutAction, Timer},
-            LoopHandle,
-        },
+    reexports::calloop::{
+        LoopHandle,
+        channel::Sender,
+        timer::{TimeoutAction, Timer},
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
         Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
     },
     session_lock::{
         SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
         SessionLockSurfaceConfigure,
     },
-    shm::{
-        raw::RawPool,
-        Shm, ShmHandler,
-    },
+    shm::{Shm, ShmHandler, raw::RawPool},
 };
 use wayland_client::{
     Connection, Proxy, QueueHandle,
@@ -48,6 +43,8 @@ pub struct LockSurface {
     pub width: u32,
     pub height: u32,
     pub scale_factor: i32,
+    /// Previous buffer kept alive until the next frame (compositor may still reference it).
+    pub pending_buffer: Option<wl_buffer::WlBuffer>,
 }
 
 /// Current authentication state.
@@ -89,6 +86,10 @@ pub struct LockState {
     pub config: LockConfig,
     pub username: String,
     pub render_state: RenderState,
+    /// Persistent shm pool reused across frames.
+    pub pool: Option<RawPool>,
+    /// Size of the current pool allocation.
+    pub pool_size: usize,
 
     // Event loop
     pub conn: Connection,
@@ -145,14 +146,21 @@ impl LockState {
             return;
         };
 
-        let mut pool = match RawPool::new(buf_size, &self.shm) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!("failed to create shm pool: {e}");
-                return;
+        // Reuse the shm pool across frames; only reallocate when size increases.
+        if self.pool.is_none() || buf_size > self.pool_size {
+            match RawPool::new(buf_size, &self.shm) {
+                Ok(p) => {
+                    self.pool = Some(p);
+                    self.pool_size = buf_size;
+                }
+                Err(e) => {
+                    tracing::error!("failed to create shm pool: {e}");
+                    return;
+                }
             }
-        };
+        }
 
+        let pool = self.pool.as_mut().unwrap();
         let canvas = pool.mmap();
         canvas[..buf_size].copy_from_slice(pixmap.data());
         // Convert RGBA premultiplied to BGRA (Wayland ARGB8888 on little-endian).
@@ -168,13 +176,19 @@ impl LockState {
             qh,
         );
 
+        // Destroy the previous buffer (compositor has had time to release it).
+        if let Some(old) = self.lock_surfaces[idx].pending_buffer.take() {
+            old.destroy();
+        }
+
         let wl_surface = self.lock_surfaces[idx].lock_surface.wl_surface();
         wl_surface.set_buffer_scale(self.lock_surfaces[idx].scale_factor);
         wl_surface.attach(Some(&buffer), 0, 0);
         wl_surface.damage_buffer(0, 0, width as i32, height as i32);
         wl_surface.commit();
 
-        buffer.destroy();
+        // Keep buffer alive until the next frame.
+        self.lock_surfaces[idx].pending_buffer = Some(buffer);
     }
 
     /// Clear the password field, zeroizing the memory.
@@ -246,6 +260,7 @@ impl SessionLockHandler for LockState {
                 width: 0,
                 height: 0,
                 scale_factor: scale,
+                pending_buffer: None,
             });
         }
 
@@ -320,17 +335,14 @@ impl SeatHandler for LockState {
         _seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Keyboard && let Some(kbd) = self.keyboard.take() {
+        if capability == Capability::Keyboard
+            && let Some(kbd) = self.keyboard.take()
+        {
             kbd.release();
         }
     }
 
-    fn remove_seat(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
-    ) {
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
     }
 }
 
@@ -366,7 +378,10 @@ impl KeyboardHandler for LockState {
         event: KeyEvent,
     ) {
         // Don't process input while authenticating or after unlock.
-        if matches!(self.auth_state, AuthState::Authenticating | AuthState::Unlocked) {
+        if matches!(
+            self.auth_state,
+            AuthState::Authenticating | AuthState::Unlocked
+        ) {
             return;
         }
 
@@ -376,7 +391,10 @@ impl KeyboardHandler for LockState {
             if !self.password.is_empty() {
                 tracing::debug!("submitting password for authentication");
                 self.auth_state = AuthState::Authenticating;
-                pam::try_authenticate(&self.password, self.pam_sender.clone());
+                // Take ownership so the PAM thread gets the only copy.
+                // self.password is replaced with an empty string immediately.
+                let pw = std::mem::take(&mut self.password);
+                pam::try_authenticate(pw, self.pam_sender.clone());
                 self.redraw_all(qh);
             }
             return;
@@ -391,7 +409,12 @@ impl KeyboardHandler for LockState {
 
         if keysym == Keysym::BackSpace {
             if !self.password.is_empty() {
-                self.password.pop();
+                // Rebuild the string without the last char so the removed
+                // character's bytes don't linger in the old allocation.
+                let mut old = std::mem::take(&mut self.password);
+                let new_len = old.len() - old.chars().next_back().map_or(0, |c| c.len_utf8());
+                old.truncate(new_len);
+                self.password = old;
                 self.redraw_all(qh);
             }
             return;
@@ -450,10 +473,16 @@ impl CompositorHandler for LockState {
     fn scale_factor_changed(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        new_factor: i32,
     ) {
+        for ls in &mut self.lock_surfaces {
+            if ls.lock_surface.wl_surface() == surface {
+                ls.scale_factor = new_factor;
+            }
+        }
+        self.redraw_all(qh);
     }
 
     fn transform_changed(
@@ -520,6 +549,7 @@ impl OutputHandler for LockState {
                 width: 0,
                 height: 0,
                 scale_factor: scale,
+                pending_buffer: None,
             });
 
             tracing::info!("created lock surface for hotplugged output");

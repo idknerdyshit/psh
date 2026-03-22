@@ -22,8 +22,8 @@ fn main() {
     tracing::info!("starting psh-launch");
 
     let cfg = psh_core::config::load().expect("failed to load config");
-    let max_results = cfg.launch.max_results.unwrap_or(20);
-    let terminal_cmd = cfg.launch.terminal.clone();
+    let max_results = Rc::new(RefCell::new(cfg.launch.max_results.unwrap_or(20)));
+    let terminal_cmd = Rc::new(RefCell::new(cfg.launch.terminal.clone()));
     let theme_name = cfg.theme.name.clone();
 
     let app = gtk4::Application::builder()
@@ -41,6 +41,19 @@ fn main() {
         }
 
         psh_core::theme::apply_theme(&theme_name);
+
+        // Watch theme CSS for live reload
+        let theme_name_watch = theme_name.clone();
+        if let Some((tx, watcher)) = psh_core::theme::watch(&theme_name_watch) {
+            let mut rx = tx.subscribe();
+            glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    psh_core::theme::apply_theme(&theme_name_watch);
+                }
+            });
+            // Keep the watcher alive for the process lifetime.
+            std::mem::forget(watcher);
+        }
 
         let tracker = Rc::new(RefCell::new(frecency::FrecencyTracker::load()));
         let entries = Rc::new(RefCell::new(desktop::load_desktop_entries()));
@@ -78,12 +91,20 @@ fn main() {
         scroll.set_child(Some(&list_box));
         container.append(&scroll);
 
-        populate_list(&list_box, &entries.borrow(), &tracker.borrow(), &mut matcher.borrow_mut(), "", max_results);
+        populate_list(
+            &list_box,
+            &entries.borrow(),
+            &tracker.borrow(),
+            &mut matcher.borrow_mut(),
+            "",
+            *max_results.borrow(),
+        );
 
         let entries_search = entries.clone();
         let tracker_search = tracker.clone();
         let matcher_search = matcher.clone();
         let list_box_search = list_box.clone();
+        let max_results_search = max_results.clone();
         search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_string();
             populate_list(
@@ -92,14 +113,14 @@ fn main() {
                 &tracker_search.borrow(),
                 &mut matcher_search.borrow_mut(),
                 &query,
-                max_results,
+                *max_results_search.borrow(),
             );
         });
 
         let window_launch = window.clone();
         let tracker_launch = tracker.clone();
         let entries_launch = entries.clone();
-        let terminal_cmd_clone = terminal_cmd.clone();
+        let terminal_cmd_launch = terminal_cmd.clone();
         list_box.connect_row_activated(move |_, row| {
             let Some(idx) = row
                 .widget_name()
@@ -114,7 +135,7 @@ fn main() {
                 return;
             };
 
-            launch_app(entry, terminal_cmd_clone.as_deref());
+            launch_app(entry, terminal_cmd_launch.borrow().as_deref());
             tracker_launch.borrow_mut().record(&entry.exec);
             hide_window(&window_launch);
         });
@@ -122,20 +143,18 @@ fn main() {
         let key_controller = gtk4::EventControllerKey::new();
         let window_key = window.clone();
         let list_box_key = list_box.clone();
-        key_controller.connect_key_pressed(move |_, key, _, _| {
-            match key {
-                gtk4::gdk::Key::Escape => {
-                    hide_window(&window_key);
-                    glib::Propagation::Stop
-                }
-                gtk4::gdk::Key::Return | gtk4::gdk::Key::KP_Enter => {
-                    if let Some(row) = list_box_key.selected_row() {
-                        row.activate();
-                    }
-                    glib::Propagation::Stop
-                }
-                _ => glib::Propagation::Proceed,
+        key_controller.connect_key_pressed(move |_, key, _, _| match key {
+            gtk4::gdk::Key::Escape => {
+                hide_window(&window_key);
+                glib::Propagation::Stop
             }
+            gtk4::gdk::Key::Return | gtk4::gdk::Key::KP_Enter => {
+                if let Some(row) = list_box_key.selected_row() {
+                    row.activate();
+                }
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
         });
         window.add_controller(key_controller);
 
@@ -151,9 +170,24 @@ fn main() {
 
         // IPC client: listen for ToggleLauncher on a background thread with auto-reconnect.
         let (tx, rx) = async_channel::bounded::<()>(4);
+        let (cfg_tx, cfg_rx) = async_channel::bounded::<psh_core::config::LaunchConfig>(4);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
+                // Config file watcher
+                let cfg_tx_clone = cfg_tx;
+                tokio::spawn(async move {
+                    let config_path = psh_core::config::config_path();
+                    if let Ok((watch_tx, watcher)) = psh_core::config::watch(config_path) {
+                        // Keep the watcher alive for the task lifetime.
+                        let _watcher_guard = watcher;
+                        let mut rx = watch_tx.subscribe();
+                        while let Ok(cfg) = rx.recv().await {
+                            let _ = cfg_tx_clone.send(cfg.launch.clone()).await;
+                        }
+                    }
+                });
+
                 loop {
                     match psh_core::ipc::connect().await {
                         Ok(mut stream) => {
@@ -182,6 +216,7 @@ fn main() {
 
         // Receive toggle signals on the GTK thread.
         let window_ipc = window.clone();
+        let max_results_toggle = max_results.clone();
         glib::spawn_future_local(async move {
             while let Ok(()) = rx.recv().await {
                 if !window_ipc.is_visible() {
@@ -192,12 +227,23 @@ fn main() {
                         &tracker_ref.borrow(),
                         &mut matcher_ref.borrow_mut(),
                         "",
-                        max_results,
+                        *max_results_toggle.borrow(),
                     );
                     search_entry_ref.set_text("");
                     search_entry_ref.grab_focus();
                 }
                 toggle_window(&window_ipc);
+            }
+        });
+
+        // Receive config reloads on the GTK thread.
+        let max_results_reload = max_results.clone();
+        let terminal_cmd_reload = terminal_cmd.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(new_cfg) = cfg_rx.recv().await {
+                tracing::info!("applying reloaded launch config");
+                *max_results_reload.borrow_mut() = new_cfg.max_results.unwrap_or(20);
+                *terminal_cmd_reload.borrow_mut() = new_cfg.terminal;
             }
         });
 
@@ -252,8 +298,12 @@ fn populate_list(
             list_box.append(&create_entry_row(idx, entry));
         }
     } else {
-        let pattern =
-            Pattern::new(query, CaseMatching::Ignore, Normalization::Smart, AtomKind::Fuzzy);
+        let pattern = Pattern::new(
+            query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
 
         let mut scored: Vec<_> = entries
             .iter()
@@ -318,13 +368,15 @@ fn create_entry_row(idx: usize, entry: &desktop::DesktopEntry) -> gtk4::ListBoxR
 /// Launch an application, respecting the Terminal flag.
 fn launch_app(entry: &desktop::DesktopEntry, terminal_cmd: Option<&str>) {
     let mut cmd = if entry.terminal {
-        let term = terminal_cmd
-            .map(|s| s.to_string())
-            .or_else(detect_terminal);
+        let term = terminal_cmd.map(|s| s.to_string()).or_else(detect_terminal);
         if let Some(t) = term {
-            tracing::info!("launching terminal app: {t} -e sh -c {}", entry.exec);
-            let mut c = std::process::Command::new(t);
-            c.arg("-e").arg("sh").arg("-c").arg(&entry.exec);
+            tracing::info!("launching terminal app: {t} {}", entry.exec);
+            let mut c = std::process::Command::new(&t);
+            if t == "wezterm" || t.ends_with("/wezterm") {
+                c.arg("start").arg("--").arg("sh").arg("-c").arg(&entry.exec);
+            } else {
+                c.arg("-e").arg("sh").arg("-c").arg(&entry.exec);
+            }
             c
         } else {
             tracing::warn!("no terminal found, launching directly: {}", entry.exec);
@@ -339,8 +391,17 @@ fn launch_app(entry: &desktop::DesktopEntry, terminal_cmd: Option<&str>) {
         c
     };
 
-    if let Err(e) = cmd.spawn() {
-        tracing::error!("failed to launch {}: {e}", entry.exec);
+    match cmd.spawn() {
+        Ok(child) => {
+            // Reap the child on a background thread to prevent zombies.
+            std::thread::spawn(move || {
+                let mut child = child;
+                let _ = child.wait();
+            });
+        }
+        Err(e) => {
+            tracing::error!("failed to launch {}: {e}", entry.exec);
+        }
     }
 }
 
@@ -354,10 +415,15 @@ fn detect_terminal() -> Option<String> {
     None
 }
 
-/// Check if a command is available on PATH.
+/// Check if a command is available and executable on PATH.
 fn which(cmd: &str) -> bool {
-    std::env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .any(|dir| std::path::Path::new(dir).join(cmd).is_file())
+    use std::os::unix::fs::PermissionsExt;
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    if path_var.is_empty() {
+        return false;
+    }
+    path_var.split(':').any(|dir| {
+        let p = std::path::Path::new(dir).join(cmd);
+        p.is_file() && p.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    })
 }

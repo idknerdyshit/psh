@@ -142,18 +142,12 @@ pub struct LockConfig {
     pub show_username: bool,
     /// Background color as a hex string (e.g. "#1e1e2e").
     pub background_color: String,
-    /// Optional path to a background image.
-    pub background_image: Option<String>,
     /// Base font size in pixels.
     pub font_size: f32,
     /// Color for password indicator dots as a hex string.
     pub password_dot_color: String,
     /// Color for error messages as a hex string.
     pub error_color: String,
-    /// Auto-cancel timeout in seconds (0 = disabled).
-    pub timeout_secs: u64,
-    /// Placeholder for future blur support.
-    pub blur_background: bool,
 }
 
 impl Default for LockConfig {
@@ -164,12 +158,9 @@ impl Default for LockConfig {
             date_format: "%A, %B %d".into(),
             show_username: true,
             background_color: "#1e1e2e".into(),
-            background_image: None,
             font_size: 24.0,
             password_dot_color: "#cdd6f4".into(),
             error_color: "#f38ba8".into(),
-            timeout_secs: 0,
-            blur_background: false,
         }
     }
 }
@@ -218,10 +209,10 @@ impl Default for ClipConfig {
 }
 
 /// Expands a leading `~` in a path to the user's home directory.
-/// Returns the path unchanged if it doesn't start with `~` or if `$HOME` is not set.
+/// Returns the path unchanged if it doesn't start with `~` or if home dir cannot be determined.
 pub fn expand_tilde(path: &Path) -> PathBuf {
-    if let (Ok(stripped), Ok(home)) = (path.strip_prefix("~"), std::env::var("HOME")) {
-        return PathBuf::from(home).join(stripped);
+    if let (Ok(stripped), Some(dirs)) = (path.strip_prefix("~"), directories::BaseDirs::new()) {
+        return dirs.home_dir().join(stripped);
     }
     path.to_owned()
 }
@@ -240,35 +231,31 @@ pub fn load() -> Result<PshConfig> {
 
 /// Load config from a specific path. Returns defaults if file doesn't exist.
 pub fn load_from(path: &Path) -> Result<PshConfig> {
-    if !path.exists() {
-        info!("no config file at {}, using defaults", path.display());
-        return Ok(PshConfig::default());
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            info!("no config file at {}, using defaults", path.display());
+            return Ok(PshConfig::default());
+        }
+        Err(e) => return Err(PshError::Io(e)),
+    };
+    let deserializer = toml::Deserializer::new(&contents);
+    let mut unknown_keys = Vec::new();
+    let mut config: PshConfig = serde_ignored::deserialize(deserializer, |path| {
+        unknown_keys.push(path.to_string());
+    })
+    .map_err(|source| PshError::ConfigParse {
+        path: path.to_owned(),
+        source,
+    })?;
+    for key in &unknown_keys {
+        warn!("unknown config key: {key}");
     }
-
-    let contents = std::fs::read_to_string(path).map_err(PshError::Io)?;
-    let mut config: PshConfig =
-        toml::from_str(&contents).map_err(|source| PshError::ConfigParse {
-            path: path.to_owned(),
-            source,
-        })?;
 
     // Expand tilde in paths that users are likely to write with ~/
     if let Some(ref p) = config.wall.path {
         config.wall.path = Some(expand_tilde(p));
     }
-    if let Some(ref p) = config.lock.background_image {
-        let expanded = expand_tilde(Path::new(p));
-        config.lock.background_image = Some(
-            expanded
-                .to_str()
-                .ok_or_else(|| PshError::Config(format!(
-                    "lock.background_image path contains invalid UTF-8: {}",
-                    expanded.display()
-                )))?
-                .into(),
-        );
-    }
-
     Ok(config)
 }
 
@@ -278,28 +265,25 @@ pub fn watch(path: PathBuf) -> Result<(broadcast::Sender<PshConfig>, Recommended
     let tx_clone = tx.clone();
     let path_clone = path.clone();
 
-    let mut watcher =
-        RecommendedWatcher::new(
-            move |res: std::result::Result<notify::Event, notify::Error>| match res {
-                Ok(event)
-                    if matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_)
-                    ) =>
-                {
-                    match load_from(&path_clone) {
-                        Ok(config) => {
-                            info!("config reloaded");
-                            let _ = tx_clone.send(config);
-                        }
-                        Err(e) => warn!("failed to reload config: {e}"),
+    let mut watcher = RecommendedWatcher::new(
+        move |res: std::result::Result<notify::Event, notify::Error>| match res {
+            Ok(event)
+                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+                    && event.paths.iter().any(|p| p.ends_with("psh.toml")) =>
+            {
+                match load_from(&path_clone) {
+                    Ok(config) => {
+                        info!("config reloaded");
+                        let _ = tx_clone.send(config);
                     }
+                    Err(e) => warn!("failed to reload config: {e}"),
                 }
-                Ok(_) => {}
-                Err(e) => warn!("config watch error: {e}"),
-            },
-            notify::Config::default(),
-        )?;
+            }
+            Ok(_) => {}
+            Err(e) => warn!("config watch error: {e}"),
+        },
+        notify::Config::default(),
+    )?;
 
     match path.parent().filter(|p| p.exists()) {
         Some(parent) => {
@@ -308,7 +292,9 @@ pub fn watch(path: PathBuf) -> Result<(broadcast::Sender<PshConfig>, Recommended
         None => {
             warn!(
                 "config directory {} does not exist, config hot-reload disabled",
-                path.parent().map(|p| p.display().to_string()).unwrap_or_default()
+                path.parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
             );
         }
     }
@@ -345,9 +331,9 @@ mod tests {
 
     #[test]
     fn expand_tilde_expands_home() {
-        let home = std::env::var("HOME").unwrap();
+        let home = directories::BaseDirs::new().unwrap().home_dir().to_owned();
         let result = expand_tilde(Path::new("~/wallpaper.png"));
-        assert_eq!(result, PathBuf::from(home).join("wallpaper.png"));
+        assert_eq!(result, home.join("wallpaper.png"));
     }
 
     #[test]
@@ -401,12 +387,9 @@ mod tests {
         assert_eq!(config.lock.date_format, "%A, %B %d");
         assert!(config.lock.show_username);
         assert_eq!(config.lock.background_color, "#1e1e2e");
-        assert!(config.lock.background_image.is_none());
         assert_eq!(config.lock.font_size, 24.0);
         assert_eq!(config.lock.password_dot_color, "#cdd6f4");
         assert_eq!(config.lock.error_color, "#f38ba8");
-        assert_eq!(config.lock.timeout_secs, 0);
-        assert!(!config.lock.blur_background);
     }
 
     #[test]
@@ -417,14 +400,12 @@ mod tests {
             clock_format = "%I:%M %p"
             background_color = "#000000"
             font_size = 32.0
-            timeout_secs = 30
         "##;
         let config: PshConfig = toml::from_str(toml).unwrap();
         assert!(!config.lock.show_clock);
         assert_eq!(config.lock.clock_format, "%I:%M %p");
         assert_eq!(config.lock.background_color, "#000000");
         assert_eq!(config.lock.font_size, 32.0);
-        assert_eq!(config.lock.timeout_secs, 30);
     }
 
     #[test]
@@ -433,6 +414,46 @@ mod tests {
         assert_eq!(config.idle.idle_timeout_secs, 300);
         assert!(config.idle.lock_on_sleep);
         assert_eq!(config.idle.lock_command, "psh-lock");
+    }
+
+    #[test]
+    fn unknown_top_level_key_still_parses() {
+        let toml = r#"
+            bogus_key = "hello"
+            [bar]
+            position = "top"
+        "#;
+        let config: PshConfig = toml::from_str(toml).unwrap();
+        assert!(matches!(config.bar.position, BarPosition::Top));
+    }
+
+    #[test]
+    fn unknown_nested_key_still_parses() {
+        let toml = r#"
+            [notify]
+            max_visible = 3
+            nonexistent_field = true
+        "#;
+        let config: PshConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.notify.max_visible, 3);
+    }
+
+    #[test]
+    fn serde_ignored_detects_unknown_keys() {
+        let input = r#"
+            bogus = "hi"
+            [notify]
+            max_visible = 3
+            fake_field = true
+        "#;
+        let deserializer = toml::Deserializer::new(input);
+        let mut ignored = Vec::new();
+        let _config: PshConfig = serde_ignored::deserialize(deserializer, |path| {
+            ignored.push(path.to_string());
+        })
+        .unwrap();
+        assert!(ignored.contains(&"bogus".to_string()));
+        assert!(ignored.contains(&"notify.fake_field".to_string()));
     }
 
     #[test]

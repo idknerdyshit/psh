@@ -94,9 +94,7 @@ impl BarModule for NetworkModule {
 /// Connects to the system bus, queries initial state, and subscribes to
 /// `PropertiesChanged` D-Bus signals for live updates. Falls back to 5s
 /// polling if the signal subscription fails.
-async fn run_nm_backend(
-    tx: async_channel::Sender<NetworkState>,
-) -> psh_core::Result<()> {
+async fn run_nm_backend(tx: async_channel::Sender<NetworkState>) -> psh_core::Result<()> {
     use futures_util::StreamExt;
     use zbus::Connection;
 
@@ -295,8 +293,7 @@ async fn get_wifi_signal(conn: &zbus::Connection, active_conn_path: &str) -> Opt
             }
 
             // 4. Read signal strength
-            return get_dbus_property::<u8>(conn, ap_path.as_str(), NM_AP_IFACE, "Strength")
-                .await;
+            return get_dbus_property::<u8>(conn, ap_path.as_str(), NM_AP_IFACE, "Strength").await;
         }
     }
 
@@ -349,9 +346,11 @@ pub(crate) fn parse_connection_type(nm_type: &str) -> ConnectionType {
 }
 
 /// Map a NetworkManager `NMState` u32 value to whether the network is connected.
+///
+/// NM_STATE_CONNECTED_LOCAL = 50, NM_STATE_CONNECTED_SITE = 60,
+/// NM_STATE_CONNECTED_GLOBAL = 70. All three indicate some level of connectivity.
 pub(crate) fn nm_state_connected(state: u32) -> bool {
-    // NM_STATE_CONNECTED_GLOBAL = 70
-    state >= 70
+    state >= 50
 }
 
 #[cfg(test)]
@@ -430,10 +429,7 @@ mod tests {
         );
         assert_eq!(parse_connection_type("vpn"), ConnectionType::Vpn);
         assert_eq!(parse_connection_type("wireguard"), ConnectionType::Vpn);
-        assert_eq!(
-            parse_connection_type(""),
-            ConnectionType::Disconnected
-        );
+        assert_eq!(parse_connection_type(""), ConnectionType::Disconnected);
         assert!(matches!(
             parse_connection_type("bridge"),
             ConnectionType::Other(_)
@@ -445,9 +441,9 @@ mod tests {
         assert!(!nm_state_connected(0)); // NM_STATE_UNKNOWN
         assert!(!nm_state_connected(10)); // NM_STATE_ASLEEP
         assert!(!nm_state_connected(20)); // NM_STATE_DISCONNECTED
-        assert!(!nm_state_connected(50)); // NM_STATE_CONNECTED_SITE
+        assert!(nm_state_connected(50)); // NM_STATE_CONNECTED_LOCAL
+        assert!(nm_state_connected(60)); // NM_STATE_CONNECTED_SITE
         assert!(nm_state_connected(70)); // NM_STATE_CONNECTED_GLOBAL
-        assert!(nm_state_connected(80)); // higher values
     }
 
     #[test]

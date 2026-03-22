@@ -5,18 +5,14 @@
 //! condition triggers.
 
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use psh_core::config::{self, IdleConfig};
 use smithay_client_toolkit::{
     delegate_registry, delegate_seat,
     reexports::{
-        calloop::{
-            self,
-            channel::Sender,
-            EventLoop,
-        },
+        calloop::{self, EventLoop, channel::Sender},
         calloop_wayland_source::WaylandSource,
     },
     registry::{ProvidesRegistryState, RegistryState},
@@ -24,9 +20,9 @@ use smithay_client_toolkit::{
     seat::{Capability, SeatHandler, SeatState},
 };
 use wayland_client::{
-    globals::{registry_queue_init, GlobalList},
-    protocol::wl_seat,
     Connection, Dispatch, QueueHandle,
+    globals::{GlobalList, registry_queue_init},
+    protocol::wl_seat,
 };
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::{self, ExtIdleNotificationV1},
@@ -37,6 +33,8 @@ use wayland_protocols::ext::idle_notify::v1::client::{
 enum IdleCommand {
     /// Lock the screen (from idle timeout or sleep hook).
     Lock,
+    /// Reload config from disk and apply changes.
+    ReloadConfig,
 }
 
 /// Main application state.
@@ -50,6 +48,8 @@ struct IdleState {
     idle_notification: Option<ExtIdleNotificationV1>,
     idle_notifier: Option<ExtIdleNotifierV1>,
     globals: GlobalList,
+    /// Queue handle for creating new Wayland protocol objects.
+    qh: Option<QueueHandle<Self>>,
 }
 
 impl IdleState {
@@ -80,7 +80,10 @@ impl IdleState {
         let parts = match shlex::split(&self.config.lock_command) {
             Some(p) if !p.is_empty() => p,
             _ => {
-                tracing::error!("invalid or empty lock command: {}", self.config.lock_command);
+                tracing::error!(
+                    "invalid or empty lock command: {}",
+                    self.config.lock_command
+                );
                 return;
             }
         };
@@ -94,6 +97,17 @@ impl IdleState {
                 tracing::error!("failed to spawn {}: {e}", self.config.lock_command);
             }
         }
+    }
+
+    /// Destroy and recreate the idle notification with the current config timeout.
+    fn recreate_idle_notification(&mut self, qh: &QueueHandle<Self>) {
+        if let Some(notification) = self.idle_notification.take() {
+            notification.destroy();
+        }
+        if let Some(notifier) = self.idle_notifier.take() {
+            notifier.destroy();
+        }
+        self.setup_idle_notification(qh);
     }
 
     /// Set up idle notification once we have a seat.
@@ -124,7 +138,11 @@ impl IdleState {
             }
         };
 
-        let timeout_ms = self.config.idle_timeout_secs.saturating_mul(1000).min(u32::MAX as u64);
+        let timeout_ms = self
+            .config
+            .idle_timeout_secs
+            .saturating_mul(1000)
+            .min(u32::MAX as u64);
         tracing::info!("setting up idle notification with {timeout_ms}ms timeout");
         let notification = notifier.get_idle_notification(timeout_ms as u32, seat, qh, ());
         self.idle_notification = Some(notification);
@@ -206,12 +224,7 @@ impl SeatHandler for IdleState {
     ) {
     }
 
-    fn remove_seat(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
-    ) {
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
     }
 }
 
@@ -261,6 +274,16 @@ trait LogindManager {
     /// PrepareForSleep signal — `true` before sleep, `false` after wake.
     #[zbus(signal)]
     fn prepare_for_sleep(&self, going_to_sleep: bool) -> zbus::Result<()>;
+
+    /// Take a sleep inhibitor lock. The returned fd must be kept open;
+    /// dropping it releases the inhibitor and allows sleep to proceed.
+    fn inhibit(
+        &self,
+        what: &str,
+        who: &str,
+        why: &str,
+        mode: &str,
+    ) -> zbus::Result<zbus::zvariant::OwnedFd>;
 }
 
 /// Monitor logind PrepareForSleep signal.
@@ -274,6 +297,18 @@ async fn monitor_sleep(
 
     let conn = zbus::Connection::system().await?;
     let proxy = LogindManagerProxy::new(&conn).await?;
+
+    // Take a "delay" sleep inhibitor so logind waits for us to lock before suspending.
+    let mut inhibitor = match proxy.inhibit("sleep", "psh-idle", "Lock screen before sleep", "delay").await {
+        Ok(fd) => {
+            tracing::info!("acquired logind sleep inhibitor");
+            Some(fd)
+        }
+        Err(e) => {
+            tracing::warn!("failed to acquire sleep inhibitor: {e}");
+            None
+        }
+    };
 
     let mut stream = proxy.receive_prepare_for_sleep().await?;
     tracing::info!("listening for logind PrepareForSleep signals");
@@ -299,8 +334,24 @@ async fn monitor_sleep(
                 tracing::error!("failed to send lock command to main loop: {e}");
                 break;
             }
+            // Release the inhibitor so logind can proceed with sleep.
+            // psh-lock should have started by now; the calloop processes
+            // Lock synchronously before we reach this point because
+            // Sender::send is synchronous for calloop channels.
+            drop(inhibitor.take());
         } else {
-            tracing::debug!("system resumed from sleep");
+            tracing::debug!("system resumed from sleep, re-acquiring inhibitor");
+            // Re-acquire the inhibitor for the next sleep cycle.
+            inhibitor = match proxy.inhibit("sleep", "psh-idle", "Lock screen before sleep", "delay").await {
+                Ok(fd) => {
+                    tracing::debug!("re-acquired logind sleep inhibitor");
+                    Some(fd)
+                }
+                Err(e) => {
+                    tracing::warn!("failed to re-acquire sleep inhibitor: {e}");
+                    None
+                }
+            };
         }
     }
 
@@ -333,8 +384,7 @@ fn main() {
 
     // Connect to Wayland.
     let conn = Connection::connect_to_env().expect("failed to connect to wayland");
-    let (globals, event_queue) =
-        registry_queue_init(&conn).expect("failed to init registry");
+    let (globals, event_queue) = registry_queue_init(&conn).expect("failed to init registry");
     let qh = event_queue.handle();
 
     // Set up calloop event loop.
@@ -354,6 +404,24 @@ fn main() {
             if let calloop::channel::Event::Msg(cmd) = event {
                 match cmd {
                     IdleCommand::Lock => state.lock(),
+                    IdleCommand::ReloadConfig => {
+                        tracing::info!("reloading config");
+                        if let Ok(cfg) = config::load() {
+                            let old_timeout = state.config.idle_timeout_secs;
+                            state.config = cfg.idle;
+                            // Recreate idle notification if timeout changed.
+                            if state.config.idle_timeout_secs != old_timeout
+                                && let Some(qh) = state.qh.clone()
+                            {
+                                tracing::info!(
+                                    "idle timeout changed ({}s -> {}s), recreating notification",
+                                    old_timeout,
+                                    state.config.idle_timeout_secs
+                                );
+                                state.recreate_idle_notification(&qh);
+                            }
+                        }
+                    }
                 }
             }
         })
@@ -362,8 +430,26 @@ fn main() {
     // Spawn logind sleep monitor if enabled.
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     if idle_cfg.lock_on_sleep {
-        spawn_sleep_monitor(cmd_sender, Arc::clone(&shutdown_notify));
+        spawn_sleep_monitor(cmd_sender.clone(), Arc::clone(&shutdown_notify));
     }
+
+    // Spawn config file watcher.
+    let config_sender = cmd_sender;
+    std::thread::spawn(move || {
+        let config_path = config::config_path();
+        if let Ok((_tx, _watcher)) = config::watch(config_path) {
+            let mut rx = _tx.subscribe();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime for config watcher");
+            rt.block_on(async {
+                while rx.recv().await.is_ok() {
+                    let _ = config_sender.send(IdleCommand::ReloadConfig);
+                }
+            });
+        }
+    });
 
     let mut state = IdleState {
         registry: RegistryState::new(&globals),
@@ -374,6 +460,7 @@ fn main() {
         idle_notification: None,
         idle_notifier: None,
         globals,
+        qh: Some(qh),
     };
 
     tracing::info!("entering event loop");

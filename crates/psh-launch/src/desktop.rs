@@ -135,7 +135,10 @@ fn strip_field_codes(val: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '%' {
             if let Some(next) = chars.next() {
-                if !next.is_ascii_alphabetic() {
+                if next == '%' {
+                    // `%%` is a literal `%` per the Desktop Entry Spec
+                    result.push('%');
+                } else if !next.is_ascii_alphabetic() {
                     result.push(c);
                     result.push(next);
                 }
@@ -231,9 +234,8 @@ mod tests {
 
     #[test]
     fn strip_double_percent() {
-        // `%%` in desktop files means a literal `%` — first `%` pairs with second `%`,
-        // which is not alphabetic, so both are kept.
-        assert_eq!(strip_field_codes("echo %%"), "echo %%");
+        // `%%` in desktop files means a literal `%` per the Desktop Entry Spec.
+        assert_eq!(strip_field_codes("echo %%"), "echo %");
     }
 
     #[test]

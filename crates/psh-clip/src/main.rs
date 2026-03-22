@@ -17,7 +17,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4_layer_shell::LayerShell;
 use psh_core::config;
-use tracing::{info, warn};
+use tracing::info;
 
 use history::{ClipEntry, ClipHistory};
 
@@ -34,6 +34,19 @@ fn main() {
 
     app.connect_activate(move |app| {
         psh_core::theme::apply_theme(&cfg.theme.name);
+
+        // Watch theme CSS for live reload
+        let theme_name = cfg.theme.name.clone();
+        if let Some((tx, watcher)) = psh_core::theme::watch(&theme_name) {
+            let mut rx = tx.subscribe();
+            gtk4::glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    psh_core::theme::apply_theme(&theme_name);
+                }
+            });
+            // Keep the watcher alive for the process lifetime.
+            std::mem::forget(watcher);
+        }
 
         let persisted = if clip_cfg.persist {
             let entries = persist::load();
@@ -78,8 +91,9 @@ fn main() {
             }
         });
 
-        // IPC listener for ShowClipboardHistory
+        // IPC listener for ShowClipboardHistory + config watcher
         let (ipc_tx, ipc_rx) = async_channel::bounded::<()>(4);
+        let (cfg_tx, cfg_rx) = async_channel::bounded::<config::ClipConfig>(4);
         std::thread::spawn(move || {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
@@ -89,21 +103,42 @@ fn main() {
                 }
             };
             rt.block_on(async {
-                let Ok(mut stream) = psh_core::ipc::connect().await else {
-                    warn!("could not connect to IPC hub, running standalone");
-                    return;
-                };
-                loop {
-                    match psh_core::ipc::recv(&mut stream).await {
-                        Ok(psh_core::ipc::Message::ShowClipboardHistory) => {
-                            let _ = ipc_tx.send(()).await;
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::error!("ipc error: {e}");
-                            break;
+                // Config file watcher
+                let cfg_tx_clone = cfg_tx;
+                tokio::spawn(async move {
+                    let config_path = config::config_path();
+                    if let Ok((watch_tx, watcher)) = config::watch(config_path) {
+                        // Keep the watcher alive for the task lifetime.
+                        let _watcher_guard = watcher;
+                        let mut rx = watch_tx.subscribe();
+                        while let Ok(cfg) = rx.recv().await {
+                            let _ = cfg_tx_clone.send(cfg.clip.clone()).await;
                         }
                     }
+                });
+
+                loop {
+                    match psh_core::ipc::connect().await {
+                        Ok(mut stream) => {
+                            tracing::info!("connected to IPC hub");
+                            loop {
+                                match psh_core::ipc::recv(&mut stream).await {
+                                    Ok(psh_core::ipc::Message::ShowClipboardHistory) => {
+                                        let _ = ipc_tx.send(()).await;
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        tracing::warn!("IPC recv failed: {e}, reconnecting");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!("IPC connect failed: {e}, retrying in 2s");
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             });
         });
@@ -114,6 +149,15 @@ fn main() {
         glib::spawn_future_local(async move {
             while let Ok(()) = ipc_rx.recv().await {
                 show_picker(&app_clone, &picker_history, &set_tx);
+            }
+        });
+
+        // Apply config reloads on the GTK thread
+        let reload_history = history.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(new_cfg) = cfg_rx.recv().await {
+                tracing::info!("applying reloaded clip config");
+                reload_history.set_max(new_cfg.max_history);
             }
         });
     });
@@ -127,11 +171,7 @@ fn main() {
 /// of history entries. Activating a row sends the entry over `set_tx` for the
 /// monitor thread to set as the active clipboard, then closes the window.
 /// Pressing Escape also closes the picker.
-fn show_picker(
-    app: &gtk4::Application,
-    history: &ClipHistory,
-    set_tx: &mpsc::Sender<ClipEntry>,
-) {
+fn show_picker(app: &gtk4::Application, history: &ClipHistory, set_tx: &mpsc::Sender<ClipEntry>) {
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
         .default_width(500)

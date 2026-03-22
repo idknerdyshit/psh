@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::mpsc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::{debug, error, info, warn};
 use wayland_client::protocol::{wl_registry, wl_seat};
@@ -68,8 +68,8 @@ struct MonitorState {
     device: Option<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1>,
     /// Pending offers keyed by their Wayland proxy, accumulating MIME types.
     offers: HashMap<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, OfferData>,
-    /// When true, the next selection event is from our own `set_clipboard` and should be ignored.
-    skip_next_selection: bool,
+    /// When set, selection events before this instant are from our own `set_clipboard` and should be ignored.
+    skip_until: Option<Instant>,
     /// Active data-control source kept alive until the compositor cancels it.
     _active_source: Option<zwlr_data_control_source_v1::ZwlrDataControlSourceV1>,
 }
@@ -105,7 +105,7 @@ pub fn run_monitor(
         manager: None,
         device: None,
         offers: HashMap::new(),
-        skip_next_selection: false,
+        skip_until: None,
         _active_source: None,
     };
 
@@ -169,7 +169,10 @@ pub fn run_monitor(
             tv_nsec: 100_000_000, // 100ms
         };
         let poll_result = rustix::event::poll(
-            &mut [rustix::event::PollFd::new(&wayland_fd, rustix::event::PollFlags::IN)],
+            &mut [rustix::event::PollFd::new(
+                &wayland_fd,
+                rustix::event::PollFlags::IN,
+            )],
             Some(&timeout),
         );
 
@@ -206,12 +209,17 @@ pub fn run_monitor(
 
 /// Sets the clipboard to the given entry via data-control source.
 fn set_clipboard(state: &mut MonitorState, qh: &QueueHandle<MonitorState>, entry: ClipEntry) {
-    let Some(manager) = &state.manager else { return };
+    let Some(manager) = &state.manager else {
+        return;
+    };
     let Some(device) = &state.device else { return };
 
-    let source = manager.create_data_source(qh, SourceData {
-        entry: entry.clone(),
-    });
+    let source = manager.create_data_source(
+        qh,
+        SourceData {
+            entry: entry.clone(),
+        },
+    );
 
     match &entry {
         ClipEntry::Text { .. } => {
@@ -225,7 +233,7 @@ fn set_clipboard(state: &mut MonitorState, qh: &QueueHandle<MonitorState>, entry
     }
 
     device.set_selection(Some(&source));
-    state.skip_next_selection = true;
+    state.skip_until = Some(Instant::now() + std::time::Duration::from_millis(100));
     state._active_source = Some(source);
     debug!("clipboard set via data-control source");
 }
@@ -315,13 +323,17 @@ fn receive_offer_data(
     // Drop write end so reads will see EOF once the compositor is done writing
     drop(write_fd);
 
-    // Poll the read fd with a 2-second timeout
+    // Poll the read fd with a 500ms timeout. This blocks the monitor thread's Wayland
+    // dispatch but the thread is dedicated to clipboard monitoring so the impact is limited.
     let timeout = rustix::time::Timespec {
-        tv_sec: 2,
-        tv_nsec: 0,
+        tv_sec: 0,
+        tv_nsec: 500_000_000,
     };
     let poll_result = rustix::event::poll(
-        &mut [rustix::event::PollFd::new(&read_fd, rustix::event::PollFlags::IN)],
+        &mut [rustix::event::PollFd::new(
+            &read_fd,
+            rustix::event::PollFlags::IN,
+        )],
         Some(&timeout),
     );
     match poll_result {
@@ -359,9 +371,10 @@ fn pipe() -> Option<(OwnedFd, OwnedFd)> {
 /// The `fd` is a borrowed fd from wayland-client event data. We dup it to get our
 /// own owned fd, then write to it.
 fn write_to_fd(fd: &impl AsFd, data: &[u8]) -> std::io::Result<()> {
-    let owned = fd.as_fd().try_clone_to_owned().map_err(|e| {
-        std::io::Error::other(format!("dup failed: {e}"))
-    })?;
+    let owned = fd
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|e| std::io::Error::other(format!("dup failed: {e}")))?;
     let mut file = std::fs::File::from(owned);
     file.write_all(data)
 }
@@ -446,12 +459,12 @@ impl Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, ()> for Moni
                 state.offers.insert(id, OfferData::default());
             }
             zwlr_data_control_device_v1::Event::Selection { id } => {
-                // Self-copy detection
-                if state.skip_next_selection {
-                    state.skip_next_selection = false;
+                // Self-copy detection: skip selection events shortly after we set the clipboard
+                if state.skip_until.is_some_and(|t| Instant::now() < t) {
+                    state.skip_until = None;
                     if let Some(offer) = id {
-                        offer.destroy();
                         state.offers.remove(&offer);
+                        offer.destroy();
                     }
                     return;
                 }
@@ -465,22 +478,29 @@ impl Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, ()> for Moni
                             .peek_first()
                             .is_some_and(|first| first == entry);
 
-                        if !is_dup {
-                            let _ = state.clip_tx.try_send(entry);
+                        if !is_dup
+                            && let Err(e) = state.clip_tx.try_send(entry)
+                        {
+                            warn!("clip channel send failed, entry dropped: {e}");
                         }
                     }
-                    offer.destroy();
                     state.offers.remove(&offer);
+                    offer.destroy();
+
+                    // Prune any stale offers from previous selection cycles
+                    let stale: Vec<_> = state.offers.keys().cloned().collect();
+                    for stale_offer in stale {
+                        state.offers.remove(&stale_offer);
+                        stale_offer.destroy();
+                    }
                 } else {
                     debug!("clipboard selection cleared");
                 }
             }
-            zwlr_data_control_device_v1::Event::PrimarySelection {
-                id: Some(offer),
-            } => {
+            zwlr_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => {
                 // We only care about the regular clipboard, not primary selection
-                offer.destroy();
                 state.offers.remove(&offer);
+                offer.destroy();
             }
             zwlr_data_control_device_v1::Event::PrimarySelection { id: None } => {}
 

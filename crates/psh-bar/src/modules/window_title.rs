@@ -65,9 +65,7 @@ fn setup_niri_window_title(label: &gtk4::Label, max_len: usize, rt: &tokio::runt
 ///
 /// Automatically reconnects to the niri event stream with exponential backoff
 /// if the connection drops (e.g., niri restarts).
-async fn run_niri_title_backend(
-    tx: async_channel::Sender<Option<String>>,
-) -> psh_core::Result<()> {
+async fn run_niri_title_backend(tx: async_channel::Sender<Option<String>>) -> psh_core::Result<()> {
     use std::collections::HashMap;
     use tokio::io::AsyncBufReadExt;
 
@@ -99,14 +97,17 @@ async fn run_niri_title_backend(
                         Ok(_) => {
                             backoff = std::time::Duration::from_secs(2);
                             match niri::parse_event(&line) {
-                                Ok(niri_ipc::Event::WindowsChanged { windows: new_windows }) => {
+                                Ok(niri_ipc::Event::WindowsChanged {
+                                    windows: new_windows,
+                                }) => {
                                     windows.clear();
                                     for w in &new_windows {
                                         if let Some(ref title) = w.title {
                                             windows.insert(w.id, title.clone());
                                         }
                                     }
-                                    focused_id = new_windows.iter().find(|w| w.is_focused).map(|w| w.id);
+                                    focused_id =
+                                        new_windows.iter().find(|w| w.is_focused).map(|w| w.id);
                                     let title = focused_id.and_then(|id| windows.get(&id).cloned());
                                     if tx.send(title).await.is_err() {
                                         return Ok(());
@@ -116,12 +117,10 @@ async fn run_niri_title_backend(
                                     if let Some(ref title) = window.title {
                                         windows.insert(window.id, title.clone());
                                     }
-                                    if window.is_focused {
-                                        focused_id = Some(window.id);
-                                        if tx.send(window.title.clone()).await.is_err() {
-                                            return Ok(());
-                                        }
-                                    } else if focused_id == Some(window.id)
+                                    // Only send title update if this window is already
+                                    // the focused one. Focus tracking is handled
+                                    // exclusively by WindowFocusChanged to avoid desync.
+                                    if focused_id == Some(window.id)
                                         && tx.send(window.title.clone()).await.is_err()
                                     {
                                         return Ok(());

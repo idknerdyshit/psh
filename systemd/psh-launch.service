@@ -1,11 +1,11 @@
 [Unit]
-Description=psh polkit authentication agent
+Description=psh application launcher
 PartOf=psh.target
 After=graphical-session.target psh-bar.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/psh-polkit
+ExecStart=/usr/bin/psh-launch
 Restart=on-failure
 RestartSec=2
 

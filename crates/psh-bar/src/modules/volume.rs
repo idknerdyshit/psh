@@ -57,9 +57,7 @@ impl BarModule for VolumeModule {
         });
 
         // Scroll to adjust volume
-        let scroll = gtk4::EventControllerScroll::new(
-            gtk4::EventControllerScrollFlags::VERTICAL,
-        );
+        let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
         let cmd_tx_scroll = cmd_tx.clone();
         let step = volume_step;
         scroll.connect_scroll(move |_, _, dy| {
@@ -68,7 +66,10 @@ impl BarModule for VolumeModule {
             } else {
                 format!("{step}%-")
             };
-            if cmd_tx_scroll.try_send(VolumeCommand::SetVolume(delta)).is_err() {
+            if cmd_tx_scroll
+                .try_send(VolumeCommand::SetVolume(delta))
+                .is_err()
+            {
                 tracing::debug!("volume command channel full (scroll)");
             }
             glib::Propagation::Stop
@@ -109,10 +110,14 @@ async fn run_volume_backend(
     cmd_rx: async_channel::Receiver<VolumeCommand>,
 ) {
     // Initial poll
-    if let Some(state) = poll_volume().await
-        && let Err(async_channel::TrySendError::Full(_)) = state_tx.try_send(state)
-    {
-        tracing::debug!("volume state channel full, skipping stale update");
+    if let Some(state) = poll_volume().await {
+        match state_tx.try_send(state) {
+            Err(async_channel::TrySendError::Full(_)) => {
+                tracing::debug!("volume state channel full, skipping stale update");
+            }
+            Err(async_channel::TrySendError::Closed(_)) => return,
+            Ok(()) => {}
+        }
     }
 
     loop {
@@ -128,17 +133,25 @@ async fn run_volume_backend(
                     Err(_) => break,
                 }
                 // Re-poll immediately after a command for responsive feedback
-                if let Some(state) = poll_volume().await
-                    && let Err(async_channel::TrySendError::Full(_)) = state_tx.try_send(state)
-                {
-                    tracing::debug!("volume state channel full, skipping stale update");
+                if let Some(state) = poll_volume().await {
+                    match state_tx.try_send(state) {
+                        Err(async_channel::TrySendError::Full(_)) => {
+                            tracing::debug!("volume state channel full, skipping stale update");
+                        }
+                        Err(async_channel::TrySendError::Closed(_)) => break,
+                        Ok(()) => {}
+                    }
                 }
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-                if let Some(state) = poll_volume().await
-                    && let Err(async_channel::TrySendError::Full(_)) = state_tx.try_send(state)
-                {
-                    tracing::debug!("volume state channel full, skipping stale update");
+                if let Some(state) = poll_volume().await {
+                    match state_tx.try_send(state) {
+                        Err(async_channel::TrySendError::Full(_)) => {
+                            tracing::debug!("volume state channel full, skipping stale update");
+                        }
+                        Err(async_channel::TrySendError::Closed(_)) => break,
+                        Ok(()) => {}
+                    }
                 }
             }
         }

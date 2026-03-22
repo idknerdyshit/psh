@@ -1,7 +1,7 @@
 [Unit]
 Description=psh wallpaper manager
 PartOf=psh.target
-After=graphical-session.target
+After=graphical-session.target psh-bar.service
 
 [Service]
 Type=simple

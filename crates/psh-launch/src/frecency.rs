@@ -38,10 +38,13 @@ impl FrecencyTracker {
     /// Record a launch event for the given exec command.
     pub fn record(&mut self, exec: &str) {
         let now = now_secs();
-        let entry = self.entries.entry(exec.to_string()).or_insert(FrecencyEntry {
-            count: 0,
-            last_used: now,
-        });
+        let entry = self
+            .entries
+            .entry(exec.to_string())
+            .or_insert(FrecencyEntry {
+                count: 0,
+                last_used: now,
+            });
         entry.count += 1;
         entry.last_used = now;
         self.save();
@@ -78,7 +81,12 @@ impl FrecencyTracker {
     fn history_path() -> PathBuf {
         directories::BaseDirs::new()
             .map(|dirs| dirs.data_dir().join("psh").join("launch_history.json"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/psh_launch_history.json"))
+            .or_else(|| {
+                std::env::var("XDG_RUNTIME_DIR")
+                    .ok()
+                    .map(|d| PathBuf::from(d).join("psh_launch_history.json"))
+            })
+            .expect("cannot determine XDG_DATA_HOME or XDG_RUNTIME_DIR for launch history")
     }
 }
 

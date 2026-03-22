@@ -27,6 +27,33 @@ fn main() {
         .expect("failed to build tokio runtime");
     let rt_handle = rt.handle().clone();
 
+    // Start config file watcher
+    let config_path = config::config_path();
+    let _config_watcher = rt_handle.block_on(async {
+        match config::watch(config_path) {
+            Ok((tx, watcher)) => {
+                // Broadcast ConfigReloaded to IPC clients on config change
+                let mut rx = tx.subscribe();
+                tokio::spawn(async move {
+                    while rx.recv().await.is_ok() {
+                        tracing::info!(
+                            "config changed, broadcasting ConfigReloaded to IPC clients"
+                        );
+                        if let Ok(mut stream) = psh_core::ipc::connect().await {
+                            let _ =
+                                psh_core::ipc::send(&mut stream, &Message::ConfigReloaded).await;
+                        }
+                    }
+                });
+                Some(watcher)
+            }
+            Err(e) => {
+                tracing::warn!("failed to watch config file: {e}");
+                None
+            }
+        }
+    });
+
     // Keep the runtime alive on a background thread
     std::thread::spawn(move || {
         rt.block_on(std::future::pending::<()>());
@@ -38,6 +65,19 @@ fn main() {
 
     app.connect_activate(move |app| {
         psh_core::theme::apply_theme(&cfg.theme.name);
+
+        // Watch theme CSS for live reload
+        let theme_name = cfg.theme.name.clone();
+        if let Some((tx, watcher)) = psh_core::theme::watch(&theme_name) {
+            let mut rx = tx.subscribe();
+            gtk4::glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    psh_core::theme::apply_theme(&theme_name);
+                }
+            });
+            // Keep the watcher alive for the process lifetime.
+            std::mem::forget(watcher);
+        }
 
         // Channel: modules -> IPC hub (outbound to clients)
         let (outbound_tx, outbound_rx) = async_channel::bounded::<Message>(64);
@@ -51,14 +91,32 @@ fn main() {
         let right_names = module_names(&bar_cfg.modules_right, modules::DEFAULT_RIGHT);
 
         // Build sections
-        let left = build_section(&left_names, &bar_cfg, &outbound_tx, &mut inbound_senders, &rt_handle);
+        let left = build_section(
+            &left_names,
+            &bar_cfg,
+            &outbound_tx,
+            &mut inbound_senders,
+            &rt_handle,
+        );
         left.set_margin_start(8);
         left.add_css_class("psh-bar-left");
 
-        let center = build_section(&center_names, &bar_cfg, &outbound_tx, &mut inbound_senders, &rt_handle);
+        let center = build_section(
+            &center_names,
+            &bar_cfg,
+            &outbound_tx,
+            &mut inbound_senders,
+            &rt_handle,
+        );
         center.add_css_class("psh-bar-center");
 
-        let right = build_section(&right_names, &bar_cfg, &outbound_tx, &mut inbound_senders, &rt_handle);
+        let right = build_section(
+            &right_names,
+            &bar_cfg,
+            &outbound_tx,
+            &mut inbound_senders,
+            &rt_handle,
+        );
         right.set_margin_end(8);
         right.add_css_class("psh-bar-right");
 
@@ -69,9 +127,7 @@ fn main() {
             }
         });
 
-        let window = gtk4::ApplicationWindow::builder()
-            .application(app)
-            .build();
+        let window = gtk4::ApplicationWindow::builder().application(app).build();
 
         window.init_layer_shell();
         window.set_layer(gtk4_layer_shell::Layer::Top);
@@ -95,6 +151,13 @@ fn main() {
 
         window.set_child(Some(&bar));
         window.present();
+    });
+
+    app.connect_shutdown(|_| {
+        tracing::info!("psh-bar shutting down");
+        if let Some(path) = psh_core::ipc::socket_path().ok().filter(|p| p.exists()) {
+            let _ = std::fs::remove_file(&path);
+        }
     });
 
     app.run_with_args::<String>(&[]);
@@ -158,8 +221,7 @@ async fn run_ipc_hub(
     let listener = psh_core::ipc::bind().await?;
     tracing::info!("IPC hub listening");
 
-    let clients: Arc<Mutex<HashMap<u64, OwnedWriteHalf>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let clients: Arc<Mutex<HashMap<u64, OwnedWriteHalf>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut next_id: u64 = 0;
 
     // Channel for read tasks to signal client disconnection
@@ -218,7 +280,7 @@ async fn run_ipc_hub(
 
                 match &msg {
                     Message::Ping => {
-                        broadcast(&clients_clone, &Message::Pong).await;
+                        send_to_client(&clients_clone, client_id, &Message::Pong).await;
                     }
                     Message::NotificationCount { .. }
                     | Message::ToggleLauncher
@@ -234,6 +296,21 @@ async fn run_ipc_hub(
             tracing::debug!("client {client_id} disconnected");
             let _ = remove_tx.send(client_id);
         });
+    }
+}
+
+/// Send a message to a single client by ID. Removes the client on write failure.
+async fn send_to_client(
+    clients: &tokio::sync::Mutex<std::collections::HashMap<u64, tokio::net::unix::OwnedWriteHalf>>,
+    client_id: u64,
+    msg: &Message,
+) {
+    let mut cl = clients.lock().await;
+    if let Some(writer) = cl.get_mut(&client_id)
+        && psh_core::ipc::send_to(writer, msg).await.is_err()
+    {
+        tracing::debug!("removing client {client_id} after write failure");
+        cl.remove(&client_id);
     }
 }
 
