@@ -177,7 +177,13 @@ fn draw_password_dots(pixmap: &mut Pixmap, cx: f32, cy: f32, count: usize, color
     for i in 0..n {
         let x = start_x + i as f32 * dot_spacing;
         if let Some(path) = circle_path(x, cy, dot_radius) {
-            pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+            pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
         }
     }
 }
@@ -253,8 +259,7 @@ fn draw_text_centered(
                         // Premultiplied alpha blending onto existing pixel.
                         let src_a = alpha as u32;
                         let inv_a = 255 - src_a;
-                        data[idx] =
-                            ((r as u32 * src_a + data[idx] as u32 * inv_a) / 255) as u8;
+                        data[idx] = ((r as u32 * src_a + data[idx] as u32 * inv_a) / 255) as u8;
                         data[idx + 1] =
                             ((g as u32 * src_a + data[idx + 1] as u32 * inv_a) / 255) as u8;
                         data[idx + 2] =
@@ -288,9 +293,9 @@ pub fn parse_hex_color(hex: &str) -> Color {
 fn load_font() -> FontArc {
     // Try system fonts.
     for path in FONT_SEARCH_PATHS {
-        if let Ok(font) = std::fs::read(path).and_then(|data| {
-            FontArc::try_from_vec(data).map_err(std::io::Error::other)
-        }) {
+        if let Ok(font) = std::fs::read(path)
+            .and_then(|data| FontArc::try_from_vec(data).map_err(std::io::Error::other))
+        {
             tracing::info!("loaded font from {path}");
             return font;
         }

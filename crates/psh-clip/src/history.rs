@@ -75,15 +75,30 @@ impl ClipEntry {
     }
 }
 
+/// Inner state shared across all [`ClipHistory`] clones.
+struct ClipHistoryInner {
+    entries: VecDeque<ClipEntry>,
+    max: usize,
+}
+
 /// Thread-safe clipboard history with deduplication and max capacity.
 ///
 /// Entries are stored newest-first in a [`VecDeque`]. Pushing a duplicate
 /// entry removes the old copy and places the new one at the front.
-/// Cloning a `ClipHistory` shares the same underlying storage.
+/// Cloning a `ClipHistory` shares the same underlying storage and capacity.
 #[derive(Debug, Clone)]
 pub struct ClipHistory {
-    inner: Arc<Mutex<VecDeque<ClipEntry>>>,
-    max: usize,
+    inner: Arc<Mutex<ClipHistoryInner>>,
+}
+
+// Manual Debug since ClipHistoryInner doesn't derive it
+impl std::fmt::Debug for ClipHistoryInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipHistoryInner")
+            .field("entries", &self.entries)
+            .field("max", &self.max)
+            .finish()
+    }
 }
 
 impl ClipHistory {
@@ -91,8 +106,10 @@ impl ClipHistory {
     #[cfg(test)]
     pub fn new(max: usize) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(VecDeque::with_capacity(max))),
-            max,
+            inner: Arc::new(Mutex::new(ClipHistoryInner {
+                entries: VecDeque::with_capacity(max),
+                max,
+            })),
         }
     }
 
@@ -100,8 +117,19 @@ impl ClipHistory {
     pub fn load_from(entries: Vec<ClipEntry>, max: usize) -> Self {
         let deque: VecDeque<ClipEntry> = entries.into_iter().take(max).collect();
         Self {
-            inner: Arc::new(Mutex::new(deque)),
-            max,
+            inner: Arc::new(Mutex::new(ClipHistoryInner {
+                entries: deque,
+                max,
+            })),
+        }
+    }
+
+    /// Updates the maximum capacity for all clones, trimming excess entries.
+    pub fn set_max(&self, max: usize) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.max = max;
+        while inner.entries.len() > max {
+            inner.entries.pop_back();
         }
     }
 
@@ -111,34 +139,35 @@ impl ClipHistory {
     /// removed before inserting at the front. If the history is at capacity,
     /// the oldest entry is evicted.
     pub fn push(&self, entry: ClipEntry) {
-        let mut history = self.inner.lock().unwrap();
-        if let Some(idx) = history.iter().position(|e| e == &entry) {
-            history.remove(idx);
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(idx) = inner.entries.iter().position(|e| e == &entry) {
+            inner.entries.remove(idx);
         }
-        if history.len() >= self.max {
-            history.pop_back();
+        if inner.entries.len() >= inner.max {
+            inner.entries.pop_back();
         }
-        history.push_front(entry);
+        inner.entries.push_front(entry);
     }
 
     /// Returns a clone of the most recent entry, or `None` if empty.
     ///
     /// Cheaper than `items()` when you only need the head element.
     pub fn peek_first(&self) -> Option<ClipEntry> {
-        let history = self.inner.lock().unwrap();
-        history.front().cloned()
+        let inner = self.inner.lock().unwrap();
+        inner.entries.front().cloned()
     }
 
     /// Returns a snapshot of all entries (newest first).
     pub fn items(&self) -> Vec<ClipEntry> {
-        let history = self.inner.lock().unwrap();
-        history.iter().cloned().collect()
+        let inner = self.inner.lock().unwrap();
+        inner.entries.iter().cloned().collect()
     }
 
     /// Returns entries matching the query (newest first).
     pub fn search(&self, query: &str) -> Vec<ClipEntry> {
-        let history = self.inner.lock().unwrap();
-        history
+        let inner = self.inner.lock().unwrap();
+        inner
+            .entries
             .iter()
             .filter(|e| e.matches(query))
             .cloned()
@@ -148,8 +177,8 @@ impl ClipHistory {
     /// Clears all entries.
     #[cfg(test)]
     pub fn clear(&self) {
-        let mut history = self.inner.lock().unwrap();
-        history.clear();
+        let mut inner = self.inner.lock().unwrap();
+        inner.entries.clear();
     }
 }
 
@@ -386,5 +415,35 @@ mod tests {
         let loaded: ClipEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded, entry);
         assert!(json.contains(r#""kind":"Image""#));
+    }
+
+    #[test]
+    fn set_max_trims_excess() {
+        let h = ClipHistory::new(5);
+        h.push(text("a"));
+        h.push(text("b"));
+        h.push(text("c"));
+        h.set_max(2);
+        let items = h.items();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items, vec![text("c"), text("b")]);
+    }
+
+    #[test]
+    fn set_max_shared_across_clones() {
+        let h = ClipHistory::new(10);
+        h.push(text("a"));
+        h.push(text("b"));
+        h.push(text("c"));
+
+        let h2 = h.clone();
+        h.set_max(2);
+
+        // Both clones should see the trimmed result
+        assert_eq!(h2.items().len(), 2);
+        // Pushing via the clone should also respect the new max
+        h2.push(text("d"));
+        assert_eq!(h.items().len(), 2);
+        assert_eq!(h.items(), vec![text("d"), text("c")]);
     }
 }

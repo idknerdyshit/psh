@@ -1,0 +1,31 @@
+# Maintainer: psh developers
+pkgname=psh
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Wayland desktop environment component suite'
+arch=('x86_64')
+url='https://github.com/psh-de/psh'
+license=('GPL-3.0-or-later')
+depends=('gtk4' 'gtk4-layer-shell' 'pam' 'dbus' 'wayland' 'polkit')
+makedepends=('rust' 'cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    export CARGO_TARGET_DIR=target
+    cargo build --workspace --release
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    local binaries=(psh-bar psh-notify psh-polkit psh-launch psh-clip psh-wall psh-lock psh-idle psh)
+    for bin in "${binaries[@]}"; do
+        install -Dm755 "target/release/$bin" "$pkgdir/usr/bin/$bin"
+    done
+    install -Dm644 systemd/*.service -t "$pkgdir/usr/lib/systemd/user/"
+    install -Dm644 systemd/psh.target "$pkgdir/usr/lib/systemd/user/psh.target"
+    install -Dm644 assets/themes/default.css "$pkgdir/usr/share/psh/themes/default.css"
+    install -Dm644 config/psh.toml "$pkgdir/usr/share/doc/$pkgname/psh.toml"
+    install -Dm644 config/niri.kdl "$pkgdir/usr/share/doc/$pkgname/niri.kdl"
+}

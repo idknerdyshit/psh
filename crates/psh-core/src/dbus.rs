@@ -1,6 +1,6 @@
 use tracing::info;
-use zbus::connection::Builder;
 use zbus::Connection;
+use zbus::connection::Builder;
 
 use crate::Result;
 
@@ -12,10 +12,7 @@ pub async fn session_bus() -> Result<Connection> {
 
 /// Connect to the session bus and request a well-known name.
 pub async fn session_bus_with_name(name: &str) -> Result<Connection> {
-    let conn = Builder::session()?
-        .name(name)?
-        .build()
-        .await?;
+    let conn = Builder::session()?.name(name)?.build().await?;
     info!("acquired dbus name: {name}");
     Ok(conn)
 }

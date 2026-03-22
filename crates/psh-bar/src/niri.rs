@@ -32,9 +32,8 @@ pub fn is_available() -> bool {
 /// Retries up to [`MAX_RETRIES`] times with a 2-second delay if the socket
 /// is not yet available (e.g., bar starts before niri).
 pub async fn connect() -> Result<UnixStream> {
-    let path = socket_path().ok_or_else(|| {
-        psh_core::PshError::Ipc("NIRI_SOCKET not set".into())
-    })?;
+    let path =
+        socket_path().ok_or_else(|| psh_core::PshError::Ipc("NIRI_SOCKET not set".into()))?;
 
     for attempt in 0..MAX_RETRIES {
         match UnixStream::connect(&path).await {
@@ -67,8 +66,7 @@ pub async fn connect() -> Result<UnixStream> {
 /// for non-event-stream requests).
 pub async fn request(req: &niri_ipc::Request) -> Result<niri_ipc::Response> {
     let mut stream = connect().await?;
-    let json = serde_json::to_string(req)
-        .map_err(|e| psh_core::PshError::Ipc(e.to_string()))?;
+    let json = serde_json::to_string(req).map_err(|e| psh_core::PshError::Ipc(e.to_string()))?;
 
     stream
         .write_all(json.as_bytes())
@@ -132,8 +130,7 @@ pub async fn event_stream() -> Result<BufReader<UnixStream>> {
 
 /// Parse a JSON line from the event stream into a niri Event.
 pub fn parse_event(line: &str) -> Result<niri_ipc::Event> {
-    serde_json::from_str(line)
-        .map_err(|e| psh_core::PshError::Ipc(format!("bad niri event: {e}")))
+    serde_json::from_str(line).map_err(|e| psh_core::PshError::Ipc(format!("bad niri event: {e}")))
 }
 
 #[cfg(test)]

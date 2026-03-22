@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use gtk4::glib;
 use gtk4::prelude::*;
-use psh_core::config;
+use psh_core::config::{self, NotifyConfig};
 use psh_core::ipc;
 
 fn main() {
@@ -29,6 +29,19 @@ fn main() {
     app.connect_activate(move |app| {
         psh_core::theme::apply_theme(&cfg.theme.name);
 
+        // Watch theme CSS for live reload
+        let theme_name = cfg.theme.name.clone();
+        if let Some((tx, watcher)) = psh_core::theme::watch(&theme_name) {
+            let mut rx = tx.subscribe();
+            gtk4::glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    psh_core::theme::apply_theme(&theme_name);
+                }
+            });
+            // Keep the watcher alive for the process lifetime.
+            std::mem::forget(watcher);
+        }
+
         // Forward channel: D-Bus thread → GTK thread
         let (dbus_tx, dbus_rx) = async_channel::bounded::<dbus_server::DbusToGtk>(32);
         // Reverse channel: GTK thread → D-Bus thread (for signal emission)
@@ -36,11 +49,28 @@ fn main() {
         // IPC count channel: GTK thread → tokio thread
         let (ipc_count_tx, ipc_count_rx) = async_channel::bounded::<u32>(4);
 
-        // Background thread: D-Bus server + IPC client
+        // Config reload channel: background thread -> GTK thread
+        let (config_tx, config_rx) = async_channel::bounded::<NotifyConfig>(4);
+
+        // Background thread: D-Bus server + IPC client + config watcher
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 tokio::spawn(run_ipc_client(ipc_count_rx));
+
+                // Config file watcher
+                let config_path = config::config_path();
+                let config_tx_clone = config_tx;
+                tokio::spawn(async move {
+                    if let Ok((tx, watcher)) = config::watch(config_path) {
+                        // Keep the watcher alive for the task lifetime.
+                        let _watcher_guard = watcher;
+                        let mut rx = tx.subscribe();
+                        while let Ok(cfg) = rx.recv().await {
+                            let _ = config_tx_clone.send(cfg.notify.clone()).await;
+                        }
+                    }
+                });
 
                 if let Err(e) = dbus_server::run(dbus_tx, signal_rx).await {
                     tracing::error!("dbus server error: {e}");
@@ -57,9 +87,18 @@ fn main() {
         );
 
         // Dispatch D-Bus messages to the manager on the GTK thread
+        let manager_dbus = manager.clone();
         glib::spawn_future_local(async move {
             while let Ok(msg) = dbus_rx.recv().await {
-                manager::NotificationManager::handle(&manager, msg);
+                manager::NotificationManager::handle(&manager_dbus, msg);
+            }
+        });
+
+        // Dispatch config reloads on the GTK thread
+        glib::spawn_future_local(async move {
+            while let Ok(new_cfg) = config_rx.recv().await {
+                tracing::info!("applying reloaded notify config");
+                manager::NotificationManager::update_config(&manager, new_cfg);
             }
         });
     });

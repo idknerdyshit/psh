@@ -53,6 +53,18 @@ fn main() {
     app.connect_activate(move |app| {
         psh_core::theme::apply_theme(&cfg.theme.name);
 
+        // Watch theme CSS for live reload
+        let theme_name = cfg.theme.name.clone();
+        let _theme_watcher = psh_core::theme::watch(&theme_name).map(|(tx, watcher)| {
+            let mut rx = tx.subscribe();
+            glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    psh_core::theme::apply_theme(&theme_name);
+                }
+            });
+            watcher
+        });
+
         let (gtk_tx, gtk_rx) = async_channel::bounded::<AgentToGtk>(4);
         let (resp_tx, resp_rx) = async_channel::bounded::<AuthResponse>(4);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();

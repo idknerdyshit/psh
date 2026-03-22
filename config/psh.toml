@@ -1,6 +1,7 @@
 # psh configuration
 # Place at $XDG_CONFIG_HOME/psh/psh.toml (usually ~/.config/psh/psh.toml)
 # All values shown are defaults — this file is optional.
+# Unknown keys produce a warning at startup.
 
 [theme]
 name = "default"
@@ -8,13 +9,20 @@ name = "default"
 [bar]
 position = "top"
 # height = 32
-# modules_left = ["workspaces"]
+# modules_left = ["workspaces", "window_title"]
 # modules_center = ["clock"]
-# modules_right = ["battery"]
+# modules_right = ["volume", "network", "battery", "tray"]
+# show_all_workspaces = false
+# max_title_length = 50
+# volume_step = 5
+# battery_device = "BAT0"
 
 [notify]
 max_visible = 5
 default_timeout_ms = 5000
+width = 380
+gap = 10
+icon_size = 48
 
 [polkit]
 
@@ -28,6 +36,24 @@ mode = "fill"
 
 [lock]
 show_clock = true
+clock_format = "%H:%M"
+date_format = "%A, %B %d"
+show_username = true
+background_color = "#1e1e2e"
+# background_image = "/path/to/image.png"
+font_size = 24.0
+password_dot_color = "#cdd6f4"
+error_color = "#f38ba8"
+timeout_secs = 0
+blur_background = false
+
+[idle]
+idle_timeout_secs = 300
+lock_on_sleep = true
+lock_command = "psh-lock"
 
 [clip]
 max_history = 100
+persist = true
+image_support = true
+max_image_bytes = 10000000

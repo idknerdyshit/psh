@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use secrecy::ExposeSecret;
 use secrecy::SecretString;
-use zbus::zvariant::{OwnedValue, Value};
 use zbus::Connection;
+use zbus::zvariant::{OwnedValue, Value};
 
 use psh_core::Result;
 
@@ -198,14 +198,36 @@ pub async fn authenticate(username: &str, password: &SecretString) -> Result<boo
         use tokio::io::AsyncWriteExt;
         let secret = password.expose_secret();
         // polkit-agent-helper-1 expects the password followed by a newline
-        let write_err = |e| psh_core::PshError::Other(format!("failed to write to polkit helper stdin: {e}"));
-        stdin.write_all(secret.as_bytes()).await.map_err(write_err)?;
-        stdin.write_all(b"\n").await.map_err(write_err)?;
-        drop(stdin);
+        let write_result = async {
+            stdin.write_all(secret.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
+            drop(stdin);
+            Ok::<(), std::io::Error>(())
+        }
+        .await;
+        if let Err(e) = write_result {
+            let _ = child.kill().await;
+            return Err(psh_core::PshError::Other(format!(
+                "failed to write to polkit helper stdin: {e}"
+            )));
+        }
     }
 
-    let status = child.wait().await?;
-    Ok(status.success())
+    // Timeout the helper to avoid blocking indefinitely if PAM hangs.
+    match tokio::time::timeout(std::time::Duration::from_secs(120), child.wait()).await {
+        Ok(Ok(status)) => Ok(status.success()),
+        Ok(Err(e)) => {
+            let _ = child.kill().await;
+            Err(e.into())
+        }
+        Err(_timeout) => {
+            tracing::warn!("polkit helper timed out after 120s, killing");
+            let _ = child.kill().await;
+            Err(psh_core::PshError::Other(
+                "polkit helper timed out".to_string(),
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

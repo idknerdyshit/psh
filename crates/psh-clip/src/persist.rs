@@ -117,11 +117,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clip_history.json");
 
-        let entries = vec![
-            text("hello"),
-            text("world"),
-            image("img.png", dir.path()),
-        ];
+        let entries = vec![text("hello"), text("world"), image("img.png", dir.path())];
 
         let json = serde_json::to_string(&entries).unwrap();
         fs::write(&path, &json).unwrap();

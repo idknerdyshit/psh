@@ -87,8 +87,12 @@ pub fn create_module(name: &str) -> Option<Box<dyn BarModule>> {
         "volume" => Some(Box::new(volume::VolumeModule)),
         "network" => Some(Box::new(network::NetworkModule)),
         "tray" => Some(Box::new(tray::TrayModule)),
-        "launcher" => Some(Box::new(launcher_btn::LauncherButtonModule::into_ipc_button())),
-        "clipboard" => Some(Box::new(clipboard_btn::ClipboardButtonModule::into_ipc_button())),
+        "launcher" => Some(Box::new(
+            launcher_btn::LauncherButtonModule::into_ipc_button(),
+        )),
+        "clipboard" => Some(Box::new(
+            clipboard_btn::ClipboardButtonModule::into_ipc_button(),
+        )),
         "notifications" => Some(Box::new(notifications::NotificationsModule)),
         _ => {
             tracing::warn!("unknown bar module: {name}");

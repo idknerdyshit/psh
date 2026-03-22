@@ -84,6 +84,11 @@ impl NotificationManager {
         }))
     }
 
+    /// Update the runtime config (called on config hot-reload).
+    pub fn update_config(manager: &ManagerRef, config: NotifyConfig) {
+        manager.borrow_mut().config = config;
+    }
+
     /// Handle an incoming D-Bus message on the GTK thread.
     pub fn handle(manager: &ManagerRef, msg: DbusToGtk) {
         match msg {
@@ -99,7 +104,10 @@ impl NotificationManager {
         let replacing = {
             let inner = manager.borrow();
             if notif.replaces_id > 0 {
-                inner.notifications.iter().position(|n| n.id == notif.replaces_id)
+                inner
+                    .notifications
+                    .iter()
+                    .position(|n| n.id == notif.replaces_id)
             } else {
                 None
             }
@@ -117,7 +125,11 @@ impl NotificationManager {
                 }
 
                 Self::clear_content(&active.content_box);
-                (active.content_box.clone(), inner.config.clone(), inner.signal_tx.clone())
+                (
+                    active.content_box.clone(),
+                    inner.config.clone(),
+                    inner.signal_tx.clone(),
+                )
             };
 
             // Populate without holding a borrow
@@ -171,7 +183,11 @@ impl NotificationManager {
         // Extract config and sender for building content
         let (config, signal_tx, stack) = {
             let inner = manager.borrow();
-            (inner.config.clone(), inner.signal_tx.clone(), inner.stack.clone())
+            (
+                inner.config.clone(),
+                inner.signal_tx.clone(),
+                inner.stack.clone(),
+            )
         };
 
         let content_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
@@ -402,7 +418,20 @@ impl NotificationManager {
     }
 
     fn image_data_to_texture(img: &ImageData) -> Option<gdk::Texture> {
-        if img.width <= 0 || img.height <= 0 || img.data.is_empty() {
+        if img.width <= 0 || img.height <= 0 || img.rowstride <= 0 || img.data.is_empty() {
+            return None;
+        }
+
+        let expected = (img.height as usize).saturating_mul(img.rowstride as usize);
+        if img.data.len() < expected {
+            tracing::warn!(
+                "image-data too small: have {} bytes, need {} ({}x{}, stride {})",
+                img.data.len(),
+                expected,
+                img.width,
+                img.height,
+                img.rowstride,
+            );
             return None;
         }
 

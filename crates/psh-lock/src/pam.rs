@@ -20,11 +20,12 @@ pub enum PamResult {
 ///
 /// The result is sent back via the calloop channel `sender` so the main event
 /// loop can handle it without blocking.
-pub fn try_authenticate(password: &str, sender: Sender<PamResult>) {
-    let mut pw = password.to_owned();
+/// Takes ownership of the password string so the caller's copy can be
+/// immediately zeroized, ensuring only one plaintext copy exists at a time.
+pub fn try_authenticate(mut password: String, sender: Sender<PamResult>) {
     std::thread::spawn(move || {
-        let result = authenticate_pam(&pw);
-        pw.zeroize();
+        let result = authenticate_pam(&password);
+        password.zeroize();
         let _ = sender.send(result);
     });
 }

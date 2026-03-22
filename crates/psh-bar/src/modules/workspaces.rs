@@ -27,6 +27,15 @@ pub(crate) struct WorkspaceInfo {
     pub is_focused: bool,
 }
 
+/// Updates sent from the backend to the GTK thread.
+#[derive(Debug, Clone)]
+enum WorkspaceUpdate {
+    /// Full workspace list replacement (from `WorkspacesChanged`).
+    Full(Vec<WorkspaceInfo>),
+    /// A single workspace was activated (from `WorkspaceActivated`).
+    Activated { id: u64, focused: bool },
+}
+
 /// Commands sent from the GTK thread to the backend.
 #[derive(Debug, Clone)]
 enum WorkspaceCommand {
@@ -62,7 +71,7 @@ impl BarModule for WorkspacesModule {
 
 /// Set up workspace buttons driven by the niri IPC event stream.
 fn setup_niri_workspaces(container: &gtk4::Box, ctx: &ModuleContext) {
-    let (ws_tx, ws_rx) = async_channel::bounded::<Vec<WorkspaceInfo>>(4);
+    let (ws_tx, ws_rx) = async_channel::bounded::<WorkspaceUpdate>(4);
     let (cmd_tx, cmd_rx) = async_channel::bounded::<WorkspaceCommand>(4);
 
     // Background task: connect to niri event stream on the shared runtime
@@ -78,7 +87,26 @@ fn setup_niri_workspaces(container: &gtk4::Box, ctx: &ModuleContext) {
     let cmd_tx_clone = cmd_tx.clone();
     let show_all = ctx.config.show_all_workspaces;
     glib::spawn_future_local(async move {
-        while let Ok(workspaces) = ws_rx.recv().await {
+        let mut workspaces: Vec<WorkspaceInfo> = Vec::new();
+        while let Ok(update) = ws_rx.recv().await {
+            match update {
+                WorkspaceUpdate::Full(new_workspaces) => {
+                    workspaces = new_workspaces;
+                }
+                WorkspaceUpdate::Activated { id, focused } => {
+                    // Clear previous active/focused state and apply the new one
+                    if focused {
+                        for ws in &mut workspaces {
+                            ws.is_focused = ws.id == id;
+                        }
+                    }
+                    for ws in &mut workspaces {
+                        if ws.id == id {
+                            ws.is_active = true;
+                        }
+                    }
+                }
+            }
             rebuild_workspace_buttons(&container, &workspaces, &cmd_tx_clone, show_all);
         }
     });
@@ -89,7 +117,7 @@ fn setup_niri_workspaces(container: &gtk4::Box, ctx: &ModuleContext) {
 /// Automatically reconnects to the niri event stream with exponential backoff
 /// if the connection drops (e.g., niri restarts).
 async fn run_niri_workspace_backend(
-    tx: async_channel::Sender<Vec<WorkspaceInfo>>,
+    tx: async_channel::Sender<WorkspaceUpdate>,
     cmd_rx: async_channel::Receiver<WorkspaceCommand>,
 ) -> psh_core::Result<()> {
     use tokio::io::AsyncBufReadExt;
@@ -127,13 +155,21 @@ async fn run_niri_workspace_backend(
                             backoff = std::time::Duration::from_secs(2);
                             match niri::parse_event(&line) {
                                 Ok(niri_ipc::Event::WorkspacesChanged { workspaces }) => {
-                                    let infos = workspaces.into_iter().map(workspace_from_niri).collect();
-                                    if tx.send(infos).await.is_err() {
+                                    let infos =
+                                        workspaces.into_iter().map(workspace_from_niri).collect();
+                                    if tx.send(WorkspaceUpdate::Full(infos)).await.is_err() {
                                         return Ok(());
                                     }
                                 }
                                 Ok(niri_ipc::Event::WorkspaceActivated { id, focused }) => {
                                     tracing::debug!("workspace {id} activated (focused={focused})");
+                                    if tx
+                                        .send(WorkspaceUpdate::Activated { id, focused })
+                                        .await
+                                        .is_err()
+                                    {
+                                        return Ok(());
+                                    }
                                 }
                                 Ok(_) => {}
                                 Err(e) => {
@@ -190,11 +226,7 @@ fn filter_workspaces(workspaces: &[WorkspaceInfo], show_all: bool) -> Vec<&Works
         }
     }
 
-    result.sort_by(|a, b| {
-        a.output
-            .cmp(&b.output)
-            .then_with(|| a.idx.cmp(&b.idx))
-    });
+    result.sort_by(|a, b| a.output.cmp(&b.output).then_with(|| a.idx.cmp(&b.idx)));
 
     result
 }
@@ -345,15 +377,16 @@ mod tests {
         ];
         let filtered = filter_workspaces(&workspaces, false);
         assert_eq!(filtered.len(), 2);
-        assert!(filtered.iter().all(|ws| ws.output.as_deref() == Some("DP-1")));
+        assert!(
+            filtered
+                .iter()
+                .all(|ws| ws.output.as_deref() == Some("DP-1"))
+        );
     }
 
     #[test]
     fn filter_workspaces_no_focused_shows_all() {
-        let workspaces = vec![
-            make_ws(1, 1, "DP-1", false),
-            make_ws(2, 1, "HDMI-1", false),
-        ];
+        let workspaces = vec![make_ws(1, 1, "DP-1", false), make_ws(2, 1, "HDMI-1", false)];
         // When no workspace is focused, show all as fallback
         let filtered = filter_workspaces(&workspaces, false);
         assert_eq!(filtered.len(), 2);

@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use gtk4::gdk::Display;
 use gtk4::CssProvider;
+use gtk4::gdk::Display;
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 /// Search paths for theme CSS files, in priority order.
@@ -76,4 +78,40 @@ pub fn apply_default_css() {
         &provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// Watch a named theme's CSS file for changes. Returns `None` if the theme
+/// is bundled (no file to watch) or the directory doesn't exist.
+///
+/// The returned [`broadcast::Sender`] fires `()` whenever the CSS file is
+/// modified. Callers should re-apply the theme on the GTK main thread.
+/// The [`RecommendedWatcher`] must be kept alive for the watch to remain active.
+pub fn watch(name: &str) -> Option<(broadcast::Sender<()>, RecommendedWatcher)> {
+    let path = find_theme(name)?;
+    let parent = path.parent().filter(|p| p.exists())?;
+
+    let (tx, _) = broadcast::channel(4);
+    let tx_clone = tx.clone();
+    let path_clone = path.clone();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: std::result::Result<notify::Event, notify::Error>| match res {
+            Ok(event)
+                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+                    && event.paths.iter().any(|p| p == &path_clone) =>
+            {
+                info!("theme CSS changed: {}", path_clone.display());
+                let _ = tx_clone.send(());
+            }
+            Ok(_) => {}
+            Err(e) => warn!("theme watch error: {e}"),
+        },
+        notify::Config::default(),
+    )
+    .ok()?;
+
+    watcher.watch(parent, RecursiveMode::NonRecursive).ok()?;
+
+    info!("watching theme file: {}", path.display());
+    Some((tx, watcher))
 }

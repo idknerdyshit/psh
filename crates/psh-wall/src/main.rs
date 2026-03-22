@@ -6,20 +6,16 @@
 //! output hotplug, and live wallpaper changes via IPC.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use psh_core::config::{self, expand_tilde, WallMode};
+use psh_core::config::{self, WallMode, expand_tilde};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
     output::{OutputHandler, OutputState},
     reexports::{
-        calloop::{
-            self,
-            channel::Sender,
-            EventLoop,
-        },
+        calloop::{self, EventLoop, channel::Sender},
         calloop_wayland_source::WaylandSource,
     },
     registry::{ProvidesRegistryState, RegistryState},
@@ -32,14 +28,14 @@ use smithay_client_toolkit::{
         },
     },
     shm::{
-        slot::{Buffer, SlotPool},
         Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
     },
 };
 use wayland_client::{
+    Connection, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_output, wl_shm, wl_surface},
-    Connection, QueueHandle,
 };
 
 /// Command sent from the IPC background thread to the calloop main loop via a
@@ -47,6 +43,8 @@ use wayland_client::{
 enum IpcCommand {
     /// Change the displayed wallpaper to the image at `path`.
     SetWallpaper { path: String },
+    /// Reload config from disk and apply changes.
+    ReloadConfig,
 }
 
 /// Per-output Wayland surface state. One instance exists for each connected monitor.
@@ -85,6 +83,8 @@ struct WallState {
     image_data: Option<image::RgbaImage>,
     /// How the wallpaper image is scaled/positioned on each output.
     wall_mode: WallMode,
+    /// The current wallpaper path (for change detection on config reload).
+    current_path: Option<std::path::PathBuf>,
     /// Set to `false` to exit the main event loop.
     running: bool,
 }
@@ -108,11 +108,7 @@ impl WallState {
     ///
     /// The surface is anchored to all edges with exclusive zone -1 (behind everything),
     /// no keyboard interactivity, and the output's current scale factor applied.
-    fn create_output_surface(
-        &mut self,
-        qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
-    ) {
+    fn create_output_surface(&mut self, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         let scale = self
             .output
             .info(&output)
@@ -162,7 +158,11 @@ impl WallState {
 
         let scale = surf.scale_factor.max(1) as u32;
         if surf.scale_factor < 1 {
-            tracing::warn!(surface = idx, scale_factor = surf.scale_factor, "unexpected scale factor, clamping to 1");
+            tracing::warn!(
+                surface = idx,
+                scale_factor = surf.scale_factor,
+                "unexpected scale factor, clamping to 1"
+            );
         }
         let buf_w = surf.width * scale;
         let buf_h = surf.height * scale;
@@ -176,10 +176,12 @@ impl WallState {
             "drawing surface"
         );
 
-        let (buffer, canvas) = match self
-            .pool
-            .create_buffer(buf_w as i32, buf_h as i32, stride, wl_shm::Format::Argb8888)
-        {
+        let (buffer, canvas) = match self.pool.create_buffer(
+            buf_w as i32,
+            buf_h as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
             Ok(bc) => bc,
             Err(e) => {
                 tracing::error!(surface = idx, buf_w, buf_h, "failed to create buffer: {e}");
@@ -224,6 +226,17 @@ impl WallState {
                 self.image_data = load_image(&path);
                 self.redraw_all();
             }
+            IpcCommand::ReloadConfig => {
+                tracing::info!("reloading config");
+                if let Ok(cfg) = config::load() {
+                    self.wall_mode = cfg.wall.mode;
+                    if cfg.wall.path.as_deref() != self.current_path.as_deref() {
+                        self.image_data = cfg.wall.path.as_deref().and_then(load_image);
+                        self.current_path = cfg.wall.path;
+                    }
+                    self.redraw_all();
+                }
+            }
         }
     }
 }
@@ -263,7 +276,14 @@ fn write_pixel(canvas: &mut [u8], offset: usize, pixel: &image::Rgba<u8>) {
 }
 
 /// Blit `img` onto `canvas` at position (dst_x, dst_y), clipping to canvas bounds.
-fn blit_at(canvas: &mut [u8], buf_w: u32, buf_h: u32, img: &image::RgbaImage, dst_x: u32, dst_y: u32) {
+fn blit_at(
+    canvas: &mut [u8],
+    buf_w: u32,
+    buf_h: u32,
+    img: &image::RgbaImage,
+    dst_x: u32,
+    dst_y: u32,
+) {
     let (iw, ih) = (img.width(), img.height());
     let copy_w = iw.min(buf_w.saturating_sub(dst_x));
     let copy_h = ih.min(buf_h.saturating_sub(dst_y));
@@ -441,9 +461,7 @@ impl CompositorHandler for WallState {
             if surf.scale_factor != new_factor {
                 tracing::info!("scale factor changed to {new_factor}");
                 surf.scale_factor = new_factor;
-                surf.layer_surface
-                    .wl_surface()
-                    .set_buffer_scale(new_factor);
+                surf.layer_surface.wl_surface().set_buffer_scale(new_factor);
                 if surf.configured {
                     self.draw(idx);
                 }
@@ -547,12 +565,7 @@ impl OutputHandler for WallState {
 
 /// Handles layer-shell events: draws wallpaper on configure and cleans up on close.
 impl LayerShellHandler for WallState {
-    fn closed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        layer: &LayerSurface,
-    ) {
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface) {
         if let Some(idx) = self.surface_idx_for_layer(layer) {
             tracing::info!("layer surface closed, removing");
             self.surfaces.remove(idx);
@@ -636,6 +649,7 @@ fn main() {
         surfaces: Vec::new(),
         image_data,
         wall_mode: wall_cfg.mode,
+        current_path: wall_cfg.path,
         running: true,
     };
 
@@ -660,7 +674,25 @@ fn main() {
         .expect("failed to insert IPC channel");
 
     // Spawn IPC listener thread
-    spawn_ipc_listener(ipc_sender);
+    spawn_ipc_listener(ipc_sender.clone());
+
+    // Spawn config file watcher
+    let config_sender = ipc_sender;
+    std::thread::spawn(move || {
+        let config_path = config::config_path();
+        if let Ok((_tx, _watcher)) = config::watch(config_path) {
+            let mut rx = _tx.subscribe();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime for config watcher");
+            rt.block_on(async {
+                while rx.recv().await.is_ok() {
+                    let _ = config_sender.send(IpcCommand::ReloadConfig);
+                }
+            });
+        }
+    });
 
     // Main event loop
     while state.running {
@@ -916,7 +948,11 @@ mod tests {
 
         // The middle rows should have image content (not black)
         let mid = read_pixel(&canvas, 4, 2, 4);
-        assert_ne!(mid, [0x00, 0x00, 0x00, 0xFF], "center should have image content");
+        assert_ne!(
+            mid,
+            [0x00, 0x00, 0x00, 0xFF],
+            "center should have image content"
+        );
     }
 
     // ---- render_wallpaper dispatch ----

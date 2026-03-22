@@ -74,7 +74,7 @@ Every binary starts with `psh_core::logging::init("crate_name")`. Uses `tracing`
 ## Implementation status
 
 See `PLAN.md` for per-phase breakdown.
-- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit, psh-launch, psh-clip, psh-bar, psh-lock, psh-idle
+- **Complete:** psh-core, psh-wall, psh-notify, psh-polkit, psh-launch, psh-clip, psh-bar, psh-lock, psh-idle, psh-cli
 - **psh-notify** — full fd.o Notifications D-Bus spec: single-window stacking, urgency styling, action buttons, signals, replace-id, icons, markup sanitization, IPC count broadcast.
 - **psh-polkit** — full polkit auth agent: authority registration, session detection, per-session concurrent auth, password verification via polkit-agent-helper-1, NSS username resolution, password zeroization, Escape key + 120s timeout, 12 unit tests.
 - **psh-launch** — long-lived daemon with IPC toggle, .desktop parsing, nucleo fuzzy search, GTK4 icon display, terminal app support, frecency sorting (persistent JSON), Enter/Escape keyboard nav, single-instance, desktop entry refresh on show, 4 unit tests.
@@ -82,3 +82,4 @@ See `PLAN.md` for per-phase breakdown.
 - **psh-bar** — full status bar and IPC hub: `BarModule` trait with dynamic loading, bidirectional IPC bridge, 10 modules (clock, battery, workspaces/niri IPC, window title/niri IPC, volume/wpctl, network/NM D-Bus, tray/SNI, launcher btn, clipboard btn, notification count), configurable module layout with sensible defaults, 35 unit tests.
 - **psh-lock** — full screen locker: ext-session-lock-v1 protocol, calloop event loop, SCTK keyboard input (Enter/Escape/Backspace/Ctrl+U), tiny-skia + ab_glyph rendering (clock, date, username, password dots, error messages), PAM auth on dedicated thread via conv_mock, multi-output lock surfaces with hotplug, password zeroization, signal ignoring, 16 unit tests.
 - **psh-idle** — idle monitor daemon: ext-idle-notify-v1 idle detection, logind PrepareForSleep sleep hook via zbus, spawns psh-lock, process tracking, calloop event loop, SIGTERM shutdown.
+- **psh-cli** — CLI control tool (`psh` binary): lock, launcher, clipboard, wall set, reload, ping subcommands via IPC.
