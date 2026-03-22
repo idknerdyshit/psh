@@ -30,6 +30,8 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
     protocol::{wl_buffer, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
 };
+use std::time::Instant;
+
 use zeroize::Zeroize;
 
 use psh_core::config::LockConfig;
@@ -95,6 +97,10 @@ pub struct LockState {
     pub username: String,
     pub render_state: RenderState,
 
+    // Inactivity timeout
+    pub last_input: Instant,
+    pub blanked: bool,
+
     // Event loop
     pub conn: Connection,
     pub loop_handle: LoopHandle<'static, Self>,
@@ -121,23 +127,31 @@ impl LockState {
             return;
         }
 
-        let now = std::time::SystemTime::now();
-        let time_text = format_time(&self.config.clock_format, now);
-        let date_text = format_time(&self.config.date_format, now);
+        let pixmap = if self.blanked {
+            let Some(p) = render::render_blank_surface(width, height) else {
+                return;
+            };
+            p
+        } else {
+            let now = std::time::SystemTime::now();
+            let time_text = format_time(&self.config.clock_format, now);
+            let date_text = format_time(&self.config.date_format, now);
 
-        let params = RenderParams {
-            config: &self.config,
-            username: &self.username,
-            password_len: self.password.len(),
-            auth_state: &self.auth_state,
-            time_text: &time_text,
-            date_text: &date_text,
-        };
+            let params = RenderParams {
+                config: &self.config,
+                username: &self.username,
+                password_len: self.password.len(),
+                auth_state: &self.auth_state,
+                time_text: &time_text,
+                date_text: &date_text,
+            };
 
-        let Some(pixmap) = render::render_lock_surface(width, height, &self.render_state, &params)
-        else {
-            tracing::warn!("failed to render lock surface {idx}");
-            return;
+            let Some(p) = render::render_lock_surface(width, height, &mut self.render_state, &params)
+            else {
+                tracing::warn!("failed to render lock surface {idx}");
+                return;
+            };
+            p
         };
 
         // Copy pixmap data to shm buffer, converting RGBA → BGRA (Wayland ARGB8888).
@@ -276,6 +290,29 @@ impl SessionLockHandler for LockState {
 
         // Store the confirmed lock — `new_output()` uses this for hotplugged outputs.
         self.session_lock = Some(session_lock);
+
+        // Insert inactivity timeout timer if configured.
+        if self.config.timeout_secs > 0 {
+            let qh_clone = qh.clone();
+            let _ = self.loop_handle.insert_source(
+                Timer::from_duration(std::time::Duration::from_secs(1)),
+                move |_, _, state| {
+                    if state.config.timeout_secs > 0
+                        && !state.blanked
+                        && !matches!(state.auth_state, AuthState::Authenticating)
+                        && state.last_input.elapsed()
+                            >= std::time::Duration::from_secs(state.config.timeout_secs)
+                    {
+                        tracing::info!("inactivity timeout, blanking screen");
+                        state.clear_password();
+                        state.auth_state = AuthState::Idle;
+                        state.blanked = true;
+                        state.redraw_all(&qh_clone);
+                    }
+                    TimeoutAction::ToDuration(std::time::Duration::from_secs(1))
+                },
+            );
+        }
     }
 
     fn finished(
@@ -388,6 +425,14 @@ impl KeyboardHandler for LockState {
         _serial: u32,
         event: KeyEvent,
     ) {
+        // Reset inactivity timer on any keypress.
+        self.last_input = Instant::now();
+        if self.blanked {
+            self.blanked = false;
+            self.redraw_all(qh);
+            return; // Consume the wake keypress.
+        }
+
         // Don't process input while authenticating or after unlock.
         if matches!(
             self.auth_state,

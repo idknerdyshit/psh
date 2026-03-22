@@ -3,7 +3,10 @@
 //! Renders the password entry UI onto shared memory buffers that are then
 //! attached to Wayland lock surfaces.
 
+use std::collections::HashMap;
+
 use ab_glyph::{Font, FontArc, ScaleFont};
+use image::RgbaImage;
 use psh_core::config::LockConfig;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
@@ -28,13 +31,32 @@ const FALLBACK_FONT: &[u8] = include_bytes!("fonts/Inter-Regular.ttf");
 /// State needed for rendering a lock surface.
 pub struct RenderState {
     pub font: FontArc,
+    /// Pre-processed background image (already blurred if configured).
+    pub background_image: Option<RgbaImage>,
+    /// Cache of background images scaled to specific dimensions.
+    scaled_bg_cache: HashMap<(u32, u32), RgbaImage>,
 }
 
 impl RenderState {
-    /// Create a new render state, loading the best available font.
-    pub fn new() -> Self {
+    /// Create a new render state, loading the best available font and optional background image.
+    pub fn new(config: &LockConfig) -> Self {
         let font = load_font();
-        Self { font }
+        let background_image = load_background_image(config);
+        Self {
+            font,
+            background_image,
+            scaled_bg_cache: HashMap::new(),
+        }
+    }
+
+    /// Returns a reference to the background image scaled to the given dimensions,
+    /// using a cache to avoid re-scaling on every render.
+    fn scaled_background(&mut self, width: u32, height: u32) -> Option<&RgbaImage> {
+        let bg = self.background_image.as_ref()?;
+        let key = (width, height);
+        Some(self.scaled_bg_cache.entry(key).or_insert_with(|| {
+            scale_to_cover(bg, width, height)
+        }))
     }
 }
 
@@ -55,14 +77,18 @@ pub struct RenderParams<'a> {
 pub fn render_lock_surface(
     width: u32,
     height: u32,
-    render: &RenderState,
+    render: &mut RenderState,
     params: &RenderParams<'_>,
 ) -> Option<Pixmap> {
     let mut pixmap = Pixmap::new(width, height)?;
 
-    // Background fill
-    let bg = parse_hex_color(&params.config.background_color);
-    pixmap.fill(bg);
+    // Background fill — use cached scaled image if available, otherwise solid color.
+    if let Some(scaled) = render.scaled_background(width, height) {
+        blit_rgba_to_pixmap(scaled, &mut pixmap);
+    } else {
+        let bg = parse_hex_color(&params.config.background_color);
+        pixmap.fill(bg);
+    }
 
     let cx = width as f32 / 2.0;
     let base_size = params.config.font_size;
@@ -153,6 +179,13 @@ pub fn render_lock_surface(
         AuthState::Idle | AuthState::Unlocked => {}
     }
 
+    Some(pixmap)
+}
+
+/// Render a fully black surface for the blanked/idle timeout state.
+pub fn render_blank_surface(width: u32, height: u32) -> Option<Pixmap> {
+    let mut pixmap = Pixmap::new(width, height)?;
+    pixmap.fill(Color::from_rgba8(0, 0, 0, 255));
     Some(pixmap)
 }
 
@@ -276,6 +309,60 @@ fn draw_text_centered(
     }
 }
 
+/// Load and optionally blur the background image from config.
+fn load_background_image(config: &LockConfig) -> Option<RgbaImage> {
+    let path = config.background_image.as_deref()?;
+    let img = match image::open(path) {
+        Ok(img) => {
+            tracing::info!("loaded background image: {path}");
+            img
+        }
+        Err(e) => {
+            tracing::warn!("failed to load background image '{path}': {e}");
+            return None;
+        }
+    };
+
+    if config.blur_background {
+        tracing::info!("applying gaussian blur to background image");
+        Some(image::imageops::blur(&img, 20.0))
+    } else {
+        Some(img.to_rgba8())
+    }
+}
+
+/// Scale an image to cover the target dimensions (crop overflow from center).
+fn scale_to_cover(img: &RgbaImage, target_w: u32, target_h: u32) -> RgbaImage {
+    let (iw, ih) = (img.width() as f64, img.height() as f64);
+    let (tw, th) = (target_w as f64, target_h as f64);
+    let scale = (tw / iw).max(th / ih);
+    let rw = (iw * scale).ceil() as u32;
+    let rh = (ih * scale).ceil() as u32;
+    let resized = image::imageops::resize(img, rw, rh, image::imageops::FilterType::Lanczos3);
+    let x_off = rw.saturating_sub(target_w) / 2;
+    let y_off = rh.saturating_sub(target_h) / 2;
+    image::imageops::crop_imm(&resized, x_off, y_off, target_w, target_h).to_image()
+}
+
+/// Blit an RGBA image onto a tiny-skia Pixmap, converting to premultiplied alpha.
+fn blit_rgba_to_pixmap(img: &RgbaImage, pixmap: &mut Pixmap) {
+    let pw = pixmap.width() as usize;
+    let data = pixmap.data_mut();
+    for (y, row) in img.rows().enumerate() {
+        for (x, pixel) in row.enumerate() {
+            let idx = (y * pw + x) * 4;
+            if idx + 3 < data.len() {
+                let [r, g, b, a] = pixel.0;
+                let af = a as f32 / 255.0;
+                data[idx] = (r as f32 * af) as u8;
+                data[idx + 1] = (g as f32 * af) as u8;
+                data[idx + 2] = (b as f32 * af) as u8;
+                data[idx + 3] = a;
+            }
+        }
+    }
+}
+
 /// Parse a hex color string like "#rrggbb" into a tiny-skia Color.
 pub fn parse_hex_color(hex: &str) -> Color {
     let hex = hex.trim_start_matches('#');
@@ -354,7 +441,7 @@ mod tests {
 
     #[test]
     fn render_produces_pixmap() {
-        let render = RenderState::new();
+        let mut render = RenderState::new(&LockConfig::default());
         let params = RenderParams {
             config: &LockConfig::default(),
             username: "testuser",
@@ -363,7 +450,7 @@ mod tests {
             time_text: "12:34",
             date_text: "Monday, March 21",
         };
-        let pixmap = render_lock_surface(800, 600, &render, &params);
+        let pixmap = render_lock_surface(800, 600, &mut render, &params);
         assert!(pixmap.is_some());
     }
 
@@ -383,7 +470,7 @@ mod tests {
 
     #[test]
     fn render_with_auth_failed() {
-        let render = RenderState::new();
+        let mut render = RenderState::new(&LockConfig::default());
         let params = RenderParams {
             config: &LockConfig::default(),
             username: "testuser",
@@ -392,13 +479,13 @@ mod tests {
             time_text: "12:34",
             date_text: "Monday, March 21",
         };
-        let pixmap = render_lock_surface(800, 600, &render, &params);
+        let pixmap = render_lock_surface(800, 600, &mut render, &params);
         assert!(pixmap.is_some());
     }
 
     #[test]
     fn render_with_authenticating() {
-        let render = RenderState::new();
+        let mut render = RenderState::new(&LockConfig::default());
         let params = RenderParams {
             config: &LockConfig::default(),
             username: "",
@@ -407,7 +494,7 @@ mod tests {
             time_text: "",
             date_text: "",
         };
-        let pixmap = render_lock_surface(800, 600, &render, &params);
+        let pixmap = render_lock_surface(800, 600, &mut render, &params);
         assert!(pixmap.is_some());
     }
 
@@ -416,7 +503,7 @@ mod tests {
         let mut config = LockConfig::default();
         config.show_clock = false;
         config.show_username = false;
-        let render = RenderState::new();
+        let mut render = RenderState::new(&LockConfig::default());
         let params = RenderParams {
             config: &config,
             username: "",
@@ -425,13 +512,66 @@ mod tests {
             time_text: "",
             date_text: "",
         };
-        let pixmap = render_lock_surface(640, 480, &render, &params);
+        let pixmap = render_lock_surface(640, 480, &mut render, &params);
         assert!(pixmap.is_some());
     }
 
     #[test]
+    fn render_blank_surface_all_black() {
+        let pixmap = render_blank_surface(100, 100).unwrap();
+        // Every pixel should be opaque black (premultiplied RGBA).
+        for chunk in pixmap.data().chunks_exact(4) {
+            assert_eq!(chunk, &[0, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn scale_to_cover_landscape_to_square() {
+        // 200x100 image → 100x100 target: scale to 100x100, crop center.
+        let img = RgbaImage::from_pixel(200, 100, image::Rgba([255, 0, 0, 255]));
+        let result = scale_to_cover(&img, 100, 100);
+        assert_eq!(result.width(), 100);
+        assert_eq!(result.height(), 100);
+    }
+
+    #[test]
+    fn scale_to_cover_portrait_to_landscape() {
+        let img = RgbaImage::from_pixel(100, 200, image::Rgba([0, 255, 0, 255]));
+        let result = scale_to_cover(&img, 200, 100);
+        assert_eq!(result.width(), 200);
+        assert_eq!(result.height(), 100);
+    }
+
+    #[test]
+    fn blit_rgba_to_pixmap_opaque() {
+        let img = RgbaImage::from_pixel(2, 2, image::Rgba([128, 64, 32, 255]));
+        let mut pixmap = Pixmap::new(2, 2).unwrap();
+        blit_rgba_to_pixmap(&img, &mut pixmap);
+        let data = pixmap.data();
+        // Fully opaque: premultiplied values should equal source values.
+        assert_eq!(data[0], 128); // R
+        assert_eq!(data[1], 64);  // G
+        assert_eq!(data[2], 32);  // B
+        assert_eq!(data[3], 255); // A
+    }
+
+    #[test]
+    fn blit_rgba_to_pixmap_semitransparent() {
+        // 50% alpha: premultiplied values should be halved.
+        let img = RgbaImage::from_pixel(1, 1, image::Rgba([200, 100, 50, 128]));
+        let mut pixmap = Pixmap::new(1, 1).unwrap();
+        blit_rgba_to_pixmap(&img, &mut pixmap);
+        let data = pixmap.data();
+        let af = 128.0 / 255.0;
+        assert_eq!(data[0], (200.0 * af) as u8);
+        assert_eq!(data[1], (100.0 * af) as u8);
+        assert_eq!(data[2], (50.0 * af) as u8);
+        assert_eq!(data[3], 128);
+    }
+
+    #[test]
     fn render_zero_size_returns_none() {
-        let render = RenderState::new();
+        let mut render = RenderState::new(&LockConfig::default());
         let params = RenderParams {
             config: &LockConfig::default(),
             username: "user",
@@ -440,6 +580,6 @@ mod tests {
             time_text: "",
             date_text: "",
         };
-        assert!(render_lock_surface(0, 0, &render, &params).is_none());
+        assert!(render_lock_surface(0, 0, &mut render, &params).is_none());
     }
 }

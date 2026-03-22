@@ -18,7 +18,11 @@ pub enum Message {
     ShowClipboardHistory,
     LockScreen,
     NotificationCount { count: u32 },
-    SetWallpaper { path: String },
+    SetWallpaper {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
 }
 
 /// Returns the IPC socket path at `$XDG_RUNTIME_DIR/psh.sock`.
@@ -147,6 +151,11 @@ mod tests {
             Message::NotificationCount { count: 0 },
             Message::SetWallpaper {
                 path: "/test.png".into(),
+                output: None,
+            },
+            Message::SetWallpaper {
+                path: "/test.png".into(),
+                output: Some("DP-1".into()),
             },
         ];
         for msg in messages {

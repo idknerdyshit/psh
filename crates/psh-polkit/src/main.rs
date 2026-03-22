@@ -51,6 +51,10 @@ fn main() {
         .build();
 
     app.connect_activate(move |app| {
+        // Keep the app alive as a background daemon — no windows until a polkit
+        // auth request arrives. Without this, GTK exits immediately.
+        let _hold_guard = app.hold();
+
         psh_core::theme::apply_theme(&cfg.theme.name);
 
         // Watch theme CSS for live reload

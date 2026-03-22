@@ -77,6 +77,7 @@ fn main() {
         .expect("failed to insert wayland source");
 
     // Build state.
+    let render_state = RenderState::new(&lock_cfg);
     let mut state = LockState {
         registry: RegistryState::new(&globals),
         output: OutputState::new(&globals, &qh),
@@ -93,7 +94,9 @@ fn main() {
         auth_state: AuthState::Idle,
         config: lock_cfg,
         username,
-        render_state: RenderState::new(),
+        render_state,
+        last_input: std::time::Instant::now(),
+        blanked: false,
         conn: conn.clone(),
         loop_handle,
         pam_sender,

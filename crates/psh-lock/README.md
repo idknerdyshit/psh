@@ -35,8 +35,8 @@ background_color = "#1e1e2e" # Background color (hex)
 font_size = 24.0             # Base font size in pixels
 password_dot_color = "#cdd6f4"  # Color for password dots
 error_color = "#f38ba8"      # Color for error messages
-timeout_secs = 0             # Auto-cancel timeout (0 = disabled)
-blur_background = false      # Placeholder for future blur support
+timeout_secs = 0             # Inactivity timeout: blanks screen + clears password (0 = disabled)
+blur_background = false      # Apply gaussian blur to background_image
 ```
 
 ## Running

@@ -16,3 +16,6 @@ signal-hook = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 wayland-client = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

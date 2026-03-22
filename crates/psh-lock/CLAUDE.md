@@ -66,17 +66,17 @@ background_color = "#1e1e2e"
 font_size = 24.0
 password_dot_color = "#cdd6f4"
 error_color = "#f38ba8"
-timeout_secs = 0       # 0 = disabled
-blur_background = false # placeholder for future
+timeout_secs = 0       # 0 = disabled; blanks screen + clears password after N seconds idle
+blur_background = false # applies gaussian blur to background_image
 ```
 
 ## Testing
 
 ```sh
-cargo test -p psh-lock   # 16 unit tests
+cargo test -p psh-lock   # 21 unit tests
 cargo clippy -p psh-lock # no warnings
 ```
 
-Unit tests cover: hex color parsing, circle path generation, RGBA/BGRA conversion, pixmap rendering (idle, failed, authenticating, no clock, zero size), password dot layout, time formatting, username resolution, PAM result types.
+Unit tests cover: hex color parsing, circle path generation, RGBA/BGRA conversion, pixmap rendering (idle, failed, authenticating, no clock, zero size), password dot layout, time formatting, username resolution, PAM result types, blank surface rendering, scale-to-cover, RGBA-to-pixmap blit.
 
 Manual testing: run `psh-lock` on a Wayland session with a compositor that supports ext-session-lock-v1 (e.g., niri, sway).

@@ -101,8 +101,9 @@ background_color = "#1e1e2e"
 font_size = 24.0
 password_dot_color = "#cdd6f4"
 error_color = "#f38ba8"
-timeout_secs = 0              # 0 = no auto-cancel
-blur_background = false
+timeout_secs = 0              # 0 = disabled; blanks screen + clears password after idle
+# background_image = "/path/to/image.png"
+blur_background = false       # apply gaussian blur to background_image
 
 [idle]
 idle_timeout_secs = 300       # 0 = disabled
@@ -182,7 +183,7 @@ All components are feature-complete. See [PLAN.md](PLAN.md) for the detailed his
 - **psh-launch**: Fuzzy search, frecency, terminal apps (17 tests)
 - **psh-clip**: Clipboard monitoring, persistence, image support (39 tests)
 - **psh-wall**: Multi-output wallpaper with 5 modes, config hot-reload
-- **psh-lock**: ext-session-lock-v1, PAM, tiny-skia rendering (16 tests)
+- **psh-lock**: ext-session-lock-v1, PAM, tiny-skia rendering, inactivity timeout, background blur (21 tests)
 - **psh-idle**: Idle timeout + logind sleep detection, config hot-reload
 - **psh**: CLI control tool (lock, launcher, clipboard, wallpaper, reload, ping, theme apply)
 

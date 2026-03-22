@@ -1,21 +1,23 @@
 //! psh-wall — wallpaper manager for the psh desktop environment.
 //!
 //! A pure Wayland client (no GTK) using smithay-client-toolkit to render
-//! wallpapers on layer-shell background surfaces. Supports multiple outputs
-//! with HiDPI scaling, five wallpaper modes (fill/fit/center/stretch/tile),
-//! output hotplug, and live wallpaper changes via IPC.
+//! wallpapers on layer-shell background surfaces. Supports per-output wallpapers,
+//! animated images (GIF/APNG/WebP), slideshow mode (directory of images),
+//! five wallpaper modes (fill/fit/center/stretch/tile), output hotplug,
+//! and live wallpaper changes via IPC.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use psh_core::config::{self, WallMode, expand_tilde};
+use psh_core::config::{self, WallConfig, WallMode, expand_tilde};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
     output::{OutputHandler, OutputState},
     reexports::{
-        calloop::{self, EventLoop, channel::Sender},
+        calloop::{self, EventLoop, LoopHandle, channel::Sender, timer::{TimeoutAction, Timer}},
         calloop_wayland_source::WaylandSource,
     },
     registry::{ProvidesRegistryState, RegistryState},
@@ -39,20 +41,85 @@ use wayland_client::{
 };
 
 /// Command sent from the IPC background thread to the calloop main loop via a
-/// [`calloop::channel`]. Each variant corresponds to an IPC message that psh-wall handles.
+/// [`calloop::channel`]. Each variant corresponds to an IPC message or internal event.
 enum IpcCommand {
-    /// Change the displayed wallpaper to the image at `path`.
-    SetWallpaper { path: String },
+    /// Change the displayed wallpaper to the image at `path`, optionally for a specific output.
+    SetWallpaper { path: String, output: Option<String> },
     /// Reload config from disk and apply changes.
     ReloadConfig,
 }
 
+/// A single decoded animation frame with its display delay.
+struct AnimFrame {
+    /// Pre-decoded RGBA image for this frame.
+    image: image::RgbaImage,
+    /// Delay before advancing to the next frame.
+    delay: Duration,
+}
+
+/// The image content assigned to an output. An output can display a static image,
+/// an animation, or cycle through a directory of images (slideshow).
+enum OutputContent {
+    /// A single static wallpaper image.
+    Static(image::RgbaImage),
+    /// An animated image (GIF, APNG, animated WebP) with pre-decoded frames.
+    Animated {
+        frames: Vec<AnimFrame>,
+        current_frame: usize,
+    },
+    /// Slideshow cycling through images in a directory.
+    Slideshow {
+        /// Sorted list of image file paths in the directory.
+        entries: Vec<PathBuf>,
+        /// Index of the currently displayed image in `entries`.
+        current_index: usize,
+        /// The currently decoded image.
+        current_image: image::RgbaImage,
+        /// Interval between image changes.
+        interval: Duration,
+    },
+}
+
+/// Deep-clone an `OutputContent`, resetting animation/slideshow position to the start.
+fn clone_content(content: &OutputContent) -> OutputContent {
+    match content {
+        OutputContent::Static(img) => OutputContent::Static(img.clone()),
+        OutputContent::Animated { frames, .. } => OutputContent::Animated {
+            frames: frames
+                .iter()
+                .map(|f| AnimFrame {
+                    image: f.image.clone(),
+                    delay: f.delay,
+                })
+                .collect(),
+            current_frame: 0,
+        },
+        OutputContent::Slideshow {
+            entries,
+            current_image,
+            interval,
+            ..
+        } => OutputContent::Slideshow {
+            entries: entries.clone(),
+            current_index: 0,
+            current_image: current_image.clone(),
+            interval: *interval,
+        },
+    }
+}
+
 /// Per-output Wayland surface state. One instance exists for each connected monitor.
 struct OutputSurface {
+    /// Unique ID for timer callback identification (survives index shifts from hotplug).
+    id: u64,
+    /// Wayland output name (e.g. "DP-1"), resolved from OutputState::info().
+    output_name: String,
     /// The Wayland output (monitor) this surface is bound to.
     output: wl_output::WlOutput,
     /// The wlr-layer-shell surface anchored to this output's background layer.
     layer_surface: LayerSurface,
+    /// Per-surface shared memory pool for buffer allocation.
+    pool: SlotPool,
     /// The most recently attached shm buffer, kept alive to prevent use-after-free.
     buffer: Option<Buffer>,
     /// Surface width in logical pixels (set by the compositor on configure).
@@ -63,28 +130,32 @@ struct OutputSurface {
     scale_factor: i32,
     /// Whether the compositor has sent an initial configure event for this surface.
     configured: bool,
+    /// The wallpaper content this output is currently displaying.
+    content: Option<OutputContent>,
+    /// The wallpaper scaling mode for this specific output.
+    wall_mode: WallMode,
+    /// Registration token for the active animation/slideshow timer, if any.
+    timer_token: Option<calloop::RegistrationToken>,
 }
 
 /// Main application state for psh-wall.
 ///
-/// Holds all Wayland protocol state, the shared memory pool used for buffer allocation,
-/// per-output surfaces, and the currently loaded wallpaper image.
+/// Holds all Wayland protocol state, per-output surfaces with their own content
+/// and shm pools, and the wall configuration for per-output resolution.
 struct WallState {
     registry: RegistryState,
     output: OutputState,
     compositor: CompositorState,
     layer_shell: LayerShell,
     shm: Shm,
-    /// Shared memory pool for allocating wl_shm buffers.
-    pool: SlotPool,
     /// One [`OutputSurface`] per connected monitor.
     surfaces: Vec<OutputSurface>,
-    /// The currently loaded wallpaper image, or `None` for solid-color fallback.
-    image_data: Option<image::RgbaImage>,
-    /// How the wallpaper image is scaled/positioned on each output.
-    wall_mode: WallMode,
-    /// The current wallpaper path (for change detection on config reload).
-    current_path: Option<std::path::PathBuf>,
+    /// Full wall config for per-output lookup and fallback values.
+    config: WallConfig,
+    /// calloop loop handle for inserting timer sources.
+    loop_handle: LoopHandle<'static, WallState>,
+    /// Monotonically increasing ID counter for output surfaces.
+    next_surface_id: u64,
     /// Set to `false` to exit the main event loop.
     running: bool,
 }
@@ -104,10 +175,26 @@ impl WallState {
             .position(|s| s.layer_surface.wl_surface() == surface)
     }
 
+    /// Returns the effective (path, mode, interval) for a given output name,
+    /// merging per-output overrides with the top-level fallback config.
+    fn effective_config_for(&self, output_name: &str) -> (Option<PathBuf>, WallMode, u64) {
+        if let Some(oc) = self.config.outputs.get(output_name) {
+            let path = oc
+                .path
+                .clone()
+                .or_else(|| self.config.path.clone());
+            let mode = oc.mode.unwrap_or(self.config.mode);
+            let interval = oc.interval.unwrap_or(self.config.interval);
+            (path, mode, interval)
+        } else {
+            (self.config.path.clone(), self.config.mode, self.config.interval)
+        }
+    }
+
     /// Creates a new layer-shell background surface for the given output.
     ///
-    /// The surface is anchored to all edges with exclusive zone -1 (behind everything),
-    /// no keyboard interactivity, and the output's current scale factor applied.
+    /// Resolves per-output config, loads content, and anchors the surface to
+    /// all edges with exclusive zone -1 (behind everything).
     fn create_output_surface(&mut self, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         let scale = self
             .output
@@ -123,6 +210,9 @@ impl WallState {
 
         tracing::info!("creating surface for output {name} (scale={scale})");
 
+        let (eff_path, eff_mode, eff_interval) = self.effective_config_for(&name);
+        let content = load_content_for(eff_path.as_deref(), eff_interval);
+
         let surface = self.compositor.create_surface(qh);
         let layer_surface = self.layer_shell.create_layer_surface(
             qh,
@@ -137,21 +227,33 @@ impl WallState {
         layer_surface.wl_surface().set_buffer_scale(scale);
         layer_surface.wl_surface().commit();
 
+        let pool = SlotPool::new(1920 * 1080 * 4, &self.shm)
+            .expect("failed to create per-surface shm pool");
+
+        let id = self.next_surface_id;
+        self.next_surface_id += 1;
+
         self.surfaces.push(OutputSurface {
+            id,
+            output_name: name,
             output,
             layer_surface,
+            pool,
             buffer: None,
             width: 0,
             height: 0,
             scale_factor: scale,
             configured: false,
+            content,
+            wall_mode: eff_mode,
+            timer_token: None,
         });
     }
 
     /// Renders the wallpaper (or fallback color) into an shm buffer and commits it
     /// to the surface at the given index. Skips rendering if the surface has zero dimensions.
     fn draw(&mut self, idx: usize) {
-        let surf = &self.surfaces[idx];
+        let surf = &mut self.surfaces[idx];
         if surf.width == 0 || surf.height == 0 {
             return;
         }
@@ -168,15 +270,16 @@ impl WallState {
         let buf_h = surf.height * scale;
         let stride = buf_w as i32 * 4;
 
+        let has_content = surf.content.is_some();
         tracing::debug!(
             surface = idx,
             buf_w,
             buf_h,
-            has_image = self.image_data.is_some(),
+            has_image = has_content,
             "drawing surface"
         );
 
-        let (buffer, canvas) = match self.pool.create_buffer(
+        let (buffer, canvas) = match surf.pool.create_buffer(
             buf_w as i32,
             buf_h as i32,
             stride,
@@ -191,11 +294,19 @@ impl WallState {
 
         fill_solid(canvas, 0x1e, 0x1e, 0x2e);
 
-        if let Some(ref img) = self.image_data {
-            render_wallpaper(canvas, buf_w, buf_h, img, &self.wall_mode);
+        let current_image: Option<&image::RgbaImage> = match &surf.content {
+            Some(OutputContent::Static(img)) => Some(img),
+            Some(OutputContent::Animated { frames, current_frame }) => {
+                Some(&frames[*current_frame].image)
+            }
+            Some(OutputContent::Slideshow { current_image, .. }) => Some(current_image),
+            None => None,
+        };
+
+        if let Some(img) = current_image {
+            render_wallpaper(canvas, buf_w, buf_h, img, &surf.wall_mode);
         }
 
-        let surf = &mut self.surfaces[idx];
         surf.layer_surface
             .wl_surface()
             .attach(Some(buffer.wl_buffer()), 0, 0);
@@ -206,35 +317,128 @@ impl WallState {
         surf.buffer = Some(buffer);
     }
 
-    /// Redraws every configured surface. Called after a wallpaper change via IPC.
-    fn redraw_all(&mut self) {
-        let count = self.surfaces.len();
-        tracing::debug!(count, "redrawing all surfaces");
-        for i in 0..count {
-            if self.surfaces[i].configured {
-                self.draw(i);
+    /// Schedules the next timer tick for an animated or slideshow output.
+    fn schedule_tick(&mut self, idx: usize) {
+        // Cancel existing timer for this surface.
+        if let Some(token) = self.surfaces[idx].timer_token.take() {
+            self.loop_handle.remove(token);
+        }
+
+        let delay = match &self.surfaces[idx].content {
+            Some(OutputContent::Animated { frames, current_frame }) => frames[*current_frame].delay,
+            Some(OutputContent::Slideshow { interval, .. }) => *interval,
+            _ => return,
+        };
+
+        let surface_id = self.surfaces[idx].id;
+        match self.loop_handle.insert_source(
+            Timer::from_duration(delay),
+            move |_, _, state: &mut WallState| {
+                state.advance_content(surface_id);
+                TimeoutAction::Drop
+            },
+        ) {
+            Ok(token) => self.surfaces[idx].timer_token = Some(token),
+            Err(e) => tracing::error!("failed to schedule timer: {e}"),
+        }
+    }
+
+    /// Advances content for a surface (next animation frame or next slideshow image),
+    /// redraws it, and schedules the next tick.
+    fn advance_content(&mut self, surface_id: u64) {
+        let Some(idx) = self.surfaces.iter().position(|s| s.id == surface_id) else {
+            return;
+        };
+
+        if !self.surfaces[idx].configured {
+            return;
+        }
+
+        let needs_redraw = match &mut self.surfaces[idx].content {
+            Some(OutputContent::Animated { frames, current_frame }) => {
+                *current_frame = (*current_frame + 1) % frames.len();
+                true
             }
+            Some(OutputContent::Slideshow {
+                entries,
+                current_index,
+                current_image,
+                ..
+            }) => {
+                *current_index = (*current_index + 1) % entries.len();
+                if let Some(img) = load_image(&entries[*current_index]) {
+                    *current_image = img;
+                }
+                true
+            }
+            _ => false,
+        };
+
+        if needs_redraw {
+            self.draw(idx);
+            self.schedule_tick(idx);
+        }
+    }
+
+    /// Loads or reloads content for a surface at the given index based on effective config.
+    fn reload_surface_content(&mut self, idx: usize) {
+        let name = self.surfaces[idx].output_name.clone();
+        let (eff_path, eff_mode, eff_interval) = self.effective_config_for(&name);
+        let content = load_content_for(eff_path.as_deref(), eff_interval);
+        self.surfaces[idx].content = content;
+        self.surfaces[idx].wall_mode = eff_mode;
+        if self.surfaces[idx].configured {
+            self.draw(idx);
+            self.schedule_tick(idx);
         }
     }
 
     /// Dispatches an [`IpcCommand`] received from the background IPC listener thread.
     fn handle_ipc(&mut self, cmd: IpcCommand) {
         match cmd {
-            IpcCommand::SetWallpaper { path } => {
+            IpcCommand::SetWallpaper { path, output } => {
                 let path = expand_tilde(Path::new(&path));
-                tracing::info!("IPC: changing wallpaper to {}", path.display());
-                self.image_data = load_image(&path);
-                self.redraw_all();
+                match output {
+                    Some(output_name) => {
+                        if let Some(idx) =
+                            self.surfaces.iter().position(|s| s.output_name == output_name)
+                        {
+                            tracing::info!(
+                                "IPC: setting wallpaper for {output_name} to {}",
+                                path.display()
+                            );
+                            let (_, _, eff_interval) = self.effective_config_for(&output_name);
+                            let content = load_content_for(Some(&path), eff_interval);
+                            self.surfaces[idx].content = content;
+                            if self.surfaces[idx].configured {
+                                self.draw(idx);
+                                self.schedule_tick(idx);
+                            }
+                        } else {
+                            tracing::warn!("IPC: unknown output {output_name}");
+                        }
+                    }
+                    None => {
+                        tracing::info!("IPC: setting all wallpapers to {}", path.display());
+                        // Decode once, clone for each surface.
+                        let content = load_content_for(Some(&path), self.config.interval);
+                        for idx in 0..self.surfaces.len() {
+                            self.surfaces[idx].content = content.as_ref().map(clone_content);
+                            if self.surfaces[idx].configured {
+                                self.draw(idx);
+                                self.schedule_tick(idx);
+                            }
+                        }
+                    }
+                }
             }
             IpcCommand::ReloadConfig => {
                 tracing::info!("reloading config");
                 if let Ok(cfg) = config::load() {
-                    self.wall_mode = cfg.wall.mode;
-                    if cfg.wall.path.as_deref() != self.current_path.as_deref() {
-                        self.image_data = cfg.wall.path.as_deref().and_then(load_image);
-                        self.current_path = cfg.wall.path;
+                    self.config = cfg.wall;
+                    for idx in 0..self.surfaces.len() {
+                        self.reload_surface_content(idx);
                     }
-                    self.redraw_all();
                 }
             }
         }
@@ -253,6 +457,132 @@ fn load_image(path: &Path) -> Option<image::RgbaImage> {
             None
         }
     }
+}
+
+/// Image file extensions recognized for slideshow mode.
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif",
+];
+
+/// Scans a directory for image files and returns them in sorted order.
+fn scan_image_directory(dir: &Path) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+            })
+            .collect(),
+        Err(e) => {
+            tracing::error!("failed to read slideshow directory {}: {e}", dir.display());
+            return Vec::new();
+        }
+    };
+    entries.sort();
+    entries
+}
+
+/// Returns true if the file path has an extension associated with potentially animated formats.
+fn is_potentially_animated(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("gif" | "apng" | "webp" | "png")
+    )
+}
+
+/// Attempts to decode an animated image file into frames using the `image` crate's
+/// `AnimationDecoder` trait. Returns `None` if the file is not animated (single frame)
+/// or cannot be decoded as animated.
+fn load_animated(path: &Path) -> Option<Vec<AnimFrame>> {
+    use image::AnimationDecoder;
+
+    let data = std::fs::read(path).ok()?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())?;
+
+    let raw_frames: Vec<image::Frame> = match ext.as_str() {
+        "gif" => {
+            let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&data)).ok()?;
+            decoder.into_frames().collect_frames().ok()?
+        }
+        "webp" => {
+            let decoder =
+                image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(&data)).ok()?;
+            decoder.into_frames().collect_frames().ok()?
+        }
+        "png" | "apng" => {
+            let decoder =
+                image::codecs::png::PngDecoder::new(std::io::Cursor::new(&data)).ok()?;
+            if !decoder.is_apng().ok()? {
+                return None;
+            }
+            decoder.apng().ok()?.into_frames().collect_frames().ok()?
+        }
+        _ => return None,
+    };
+
+    if raw_frames.len() <= 1 {
+        return None;
+    }
+
+    tracing::info!(
+        "loaded animated wallpaper: {} ({} frames)",
+        path.display(),
+        raw_frames.len()
+    );
+
+    let frames = raw_frames
+        .into_iter()
+        .map(|f| {
+            let (numer, denom) = f.delay().numer_denom_ms();
+            let delay_ms = (numer as u64) / (denom as u64).max(1);
+            AnimFrame {
+                image: f.into_buffer(),
+                delay: Duration::from_millis(delay_ms.max(16)),
+            }
+        })
+        .collect();
+
+    Some(frames)
+}
+
+/// Loads content for an output based on a path and interval.
+/// If path is a directory, enters slideshow mode. If it's a potentially animated
+/// image, tries animated decoding first, falling back to static.
+fn load_content_for(path: Option<&Path>, interval: u64) -> Option<OutputContent> {
+    let path = path?;
+
+    if path.is_dir() {
+        let entries = scan_image_directory(path);
+        if entries.is_empty() {
+            tracing::warn!("slideshow directory is empty: {}", path.display());
+            return None;
+        }
+        let first_image = load_image(&entries[0])?;
+        return Some(OutputContent::Slideshow {
+            entries,
+            current_index: 0,
+            current_image: first_image,
+            interval: Duration::from_secs(interval),
+        });
+    }
+
+    if is_potentially_animated(path) && let Some(frames) = load_animated(path) {
+        return Some(OutputContent::Animated {
+            frames,
+            current_frame: 0,
+        });
+    }
+
+    load_image(path).map(OutputContent::Static)
 }
 
 /// Fills every pixel in `canvas` with a solid color in ARGB8888 format (fully opaque).
@@ -423,8 +753,14 @@ fn spawn_ipc_listener(sender: Sender<IpcCommand>) {
                         tracing::info!("connected to IPC hub");
                         loop {
                             match psh_core::ipc::recv(&mut stream).await {
-                                Ok(psh_core::ipc::Message::SetWallpaper { path }) => {
-                                    if sender.send(IpcCommand::SetWallpaper { path }).is_err() {
+                                Ok(psh_core::ipc::Message::SetWallpaper {
+                                    path,
+                                    output,
+                                }) => {
+                                    if sender
+                                        .send(IpcCommand::SetWallpaper { path, output })
+                                        .is_err()
+                                    {
                                         tracing::info!("main loop gone, IPC thread exiting");
                                         return;
                                     }
@@ -559,6 +895,12 @@ impl OutputHandler for WallState {
             .and_then(|i| i.name.clone())
             .unwrap_or_else(|| "unknown".into());
         tracing::info!("output destroyed: {name}");
+        // Cancel any active timers before removing surfaces.
+        for surf in &mut self.surfaces {
+            if surf.output == output && let Some(token) = surf.timer_token.take() {
+                self.loop_handle.remove(token);
+            }
+        }
         self.surfaces.retain(|s| s.output != output);
     }
 }
@@ -568,6 +910,9 @@ impl LayerShellHandler for WallState {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface) {
         if let Some(idx) = self.surface_idx_for_layer(layer) {
             tracing::info!("layer surface closed, removing");
+            if let Some(token) = self.surfaces[idx].timer_token.take() {
+                self.loop_handle.remove(token);
+            }
             self.surfaces.remove(idx);
         }
         if self.surfaces.is_empty() {
@@ -589,6 +934,7 @@ impl LayerShellHandler for WallState {
             self.surfaces[idx].height = configure.new_size.1;
             self.surfaces[idx].configured = true;
             self.draw(idx);
+            self.schedule_tick(idx);
         }
     }
 }
@@ -636,8 +982,10 @@ fn main() {
     let layer_shell = LayerShell::bind(&globals, &qh).expect("wlr-layer-shell not available");
     let shm = Shm::bind(&globals, &qh).expect("wl_shm not available");
 
-    let pool = SlotPool::new(1920 * 1080 * 4, &shm).expect("failed to create shm pool");
-    let image_data = wall_cfg.path.as_deref().and_then(load_image);
+    // Set up calloop event loop
+    let mut event_loop: EventLoop<WallState> =
+        EventLoop::try_new().expect("failed to create event loop");
+    let loop_handle = event_loop.handle();
 
     let mut state = WallState {
         registry: RegistryState::new(&globals),
@@ -645,18 +993,12 @@ fn main() {
         compositor,
         layer_shell,
         shm,
-        pool,
         surfaces: Vec::new(),
-        image_data,
-        wall_mode: wall_cfg.mode,
-        current_path: wall_cfg.path,
+        config: wall_cfg,
+        loop_handle: loop_handle.clone(),
+        next_surface_id: 0,
         running: true,
     };
-
-    // Set up calloop event loop
-    let mut event_loop: EventLoop<WallState> =
-        EventLoop::try_new().expect("failed to create event loop");
-    let loop_handle = event_loop.handle();
 
     // Insert Wayland source
     WaylandSource::new(conn, event_queue)
@@ -971,5 +1313,81 @@ mod tests {
             let mut canvas = make_canvas(8, 8);
             render_wallpaper(&mut canvas, 8, 8, &img, &mode);
         }
+    }
+
+    // ---- scan_image_directory ----
+
+    #[test]
+    fn test_scan_image_directory_filters_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.png"), b"").unwrap();
+        std::fs::write(dir.path().join("b.jpg"), b"").unwrap();
+        std::fs::write(dir.path().join("c.txt"), b"").unwrap();
+        std::fs::write(dir.path().join("d.webp"), b"").unwrap();
+        std::fs::write(dir.path().join("e.rs"), b"").unwrap();
+
+        let entries = scan_image_directory(dir.path());
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].file_name().unwrap(), "a.png");
+        assert_eq!(entries[1].file_name().unwrap(), "b.jpg");
+        assert_eq!(entries[2].file_name().unwrap(), "d.webp");
+    }
+
+    #[test]
+    fn test_scan_image_directory_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = scan_image_directory(dir.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_scan_image_directory_nonexistent() {
+        let entries = scan_image_directory(Path::new("/nonexistent/dir"));
+        assert!(entries.is_empty());
+    }
+
+    // ---- is_potentially_animated ----
+
+    #[test]
+    fn test_is_potentially_animated() {
+        assert!(is_potentially_animated(Path::new("test.gif")));
+        assert!(is_potentially_animated(Path::new("test.webp")));
+        assert!(is_potentially_animated(Path::new("test.png")));
+        assert!(is_potentially_animated(Path::new("test.apng")));
+        assert!(!is_potentially_animated(Path::new("test.jpg")));
+        assert!(!is_potentially_animated(Path::new("test.bmp")));
+        assert!(!is_potentially_animated(Path::new("test.tiff")));
+    }
+
+    // ---- load_content_for ----
+
+    #[test]
+    fn test_load_content_for_none_path() {
+        assert!(load_content_for(None, 300).is_none());
+    }
+
+    #[test]
+    fn test_load_content_for_nonexistent_file() {
+        assert!(load_content_for(Some(Path::new("/nonexistent/image.png")), 300).is_none());
+    }
+
+    #[test]
+    fn test_load_content_for_empty_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_content_for(Some(dir.path()), 300).is_none());
+    }
+
+    // ---- IMAGE_EXTENSIONS ----
+
+    #[test]
+    fn test_image_extensions() {
+        assert!(IMAGE_EXTENSIONS.contains(&"png"));
+        assert!(IMAGE_EXTENSIONS.contains(&"jpg"));
+        assert!(IMAGE_EXTENSIONS.contains(&"jpeg"));
+        assert!(IMAGE_EXTENSIONS.contains(&"gif"));
+        assert!(IMAGE_EXTENSIONS.contains(&"webp"));
+        assert!(IMAGE_EXTENSIONS.contains(&"bmp"));
+        assert!(!IMAGE_EXTENSIONS.contains(&"txt"));
+        assert!(!IMAGE_EXTENSIONS.contains(&"rs"));
     }
 }

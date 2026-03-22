@@ -20,3 +20,4 @@ signal-hook = { workspace = true }
 zeroize = { workspace = true }
 libc = { workspace = true }
 ab_glyph = { workspace = true }
+image = { workspace = true }

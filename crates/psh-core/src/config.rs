@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -108,11 +109,29 @@ pub struct LaunchConfig {
     pub max_results: Option<usize>,
 }
 
+/// Per-output wallpaper override. Unset fields inherit from the top-level `[wall]` section.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct OutputWallConfig {
+    /// Image path (or directory for slideshow) for this specific output.
+    pub path: Option<PathBuf>,
+    /// Wallpaper scaling mode for this output.
+    pub mode: Option<WallMode>,
+    /// Slideshow interval in seconds for this output (only when path is a directory).
+    pub interval: Option<u64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WallConfig {
+    /// Default wallpaper image path, or directory path for slideshow mode.
     pub path: Option<PathBuf>,
+    /// Default wallpaper scaling mode.
     pub mode: WallMode,
+    /// Slideshow interval in seconds (default: 300). Only applies when path is a directory.
+    pub interval: u64,
+    /// Per-output wallpaper overrides, keyed by Wayland output name (e.g. "DP-1").
+    pub outputs: HashMap<String, OutputWallConfig>,
 }
 
 impl Default for WallConfig {
@@ -120,11 +139,13 @@ impl Default for WallConfig {
         Self {
             path: None,
             mode: WallMode::Fill,
+            interval: 300,
+            outputs: HashMap::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WallMode {
     #[default]
@@ -155,9 +176,11 @@ pub struct LockConfig {
     pub password_dot_color: String,
     /// Color for error messages as a hex string.
     pub error_color: String,
-    /// Auto-dismiss timeout in seconds (0 = disabled).
+    /// Optional path to a background image.
+    pub background_image: Option<String>,
+    /// Inactivity timeout in seconds — clears password and blanks screen (0 = disabled).
     pub timeout_secs: u64,
-    /// Blur the background (placeholder for future implementation).
+    /// Apply gaussian blur to the background image.
     pub blur_background: bool,
 }
 
@@ -172,6 +195,7 @@ impl Default for LockConfig {
             font_size: 24.0,
             password_dot_color: "#cdd6f4".into(),
             error_color: "#f38ba8".into(),
+            background_image: None,
             timeout_secs: 0,
             blur_background: false,
         }
@@ -268,6 +292,11 @@ pub fn load_from(path: &Path) -> Result<PshConfig> {
     // Expand tilde in paths that users are likely to write with ~/
     if let Some(ref p) = config.wall.path {
         config.wall.path = Some(expand_tilde(p));
+    }
+    for output_cfg in config.wall.outputs.values_mut() {
+        if let Some(ref p) = output_cfg.path {
+            output_cfg.path = Some(expand_tilde(p));
+        }
     }
     Ok(config)
 }
@@ -467,6 +496,50 @@ mod tests {
         .unwrap();
         assert!(ignored.contains(&"bogus".to_string()));
         assert!(ignored.contains(&"notify.fake_field".to_string()));
+    }
+
+    #[test]
+    fn wall_config_per_output_parses() {
+        let toml = r#"
+            [wall]
+            path = "/default.png"
+            mode = "fill"
+            interval = 600
+
+            [wall.outputs."DP-1"]
+            path = "/left.png"
+            mode = "center"
+
+            [wall.outputs."HDMI-A-1"]
+            path = "/right/"
+            interval = 120
+        "#;
+        let config: PshConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.wall.interval, 600);
+        assert_eq!(config.wall.outputs.len(), 2);
+        assert_eq!(
+            config.wall.outputs["DP-1"].path.as_deref(),
+            Some(std::path::Path::new("/left.png"))
+        );
+        assert!(matches!(
+            config.wall.outputs["DP-1"].mode,
+            Some(WallMode::Center)
+        ));
+        assert_eq!(config.wall.outputs["HDMI-A-1"].interval, Some(120));
+        // HDMI-A-1 inherits mode from top-level (None means fallback)
+        assert!(config.wall.outputs["HDMI-A-1"].mode.is_none());
+    }
+
+    #[test]
+    fn wall_config_defaults_backward_compat() {
+        let toml = r#"
+            [wall]
+            path = "/wallpaper.png"
+            mode = "fit"
+        "#;
+        let config: PshConfig = toml::from_str(toml).unwrap();
+        assert!(config.wall.outputs.is_empty());
+        assert_eq!(config.wall.interval, 300);
     }
 
     #[test]

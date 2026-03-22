@@ -42,6 +42,9 @@ enum WallAction {
     Set {
         /// Path to the wallpaper image.
         path: String,
+        /// Target output name (e.g. "DP-1"). Omit to set all outputs.
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -71,7 +74,7 @@ async fn main() {
         Command::Reload => Message::ConfigReloaded,
         Command::Ping => Message::Ping,
         Command::Wall { action } => match action {
-            WallAction::Set { path } => Message::SetWallpaper { path },
+            WallAction::Set { path, output } => Message::SetWallpaper { path, output },
         },
         Command::Theme { .. } => unreachable!(),
     };

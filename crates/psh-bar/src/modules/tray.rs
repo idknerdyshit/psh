@@ -1,10 +1,17 @@
 //! Tray module — displays system tray items via the StatusNotifierItem protocol.
 //!
 //! Uses the `system-tray` crate to implement the StatusNotifierWatcher D-Bus
-//! service and collect tray items from running applications.
+//! service and collect tray items from running applications. Click on a tray
+//! icon shows its D-Bus menu (if available) as a GTK4 popover.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
+
+use system_tray::menu::{MenuItem, MenuType, ToggleState, ToggleType};
 
 use super::{BarModule, ModuleContext};
 
@@ -19,6 +26,10 @@ pub(crate) struct TrayItemInfo {
     pub icon_name: Option<String>,
     /// ARGB32 icon pixmap (width, height, pixels) — largest available.
     pub icon_pixmap: Option<(i32, i32, Vec<u8>)>,
+    /// D-Bus menu path for this item (e.g. "/MenuBar").
+    pub menu_path: Option<String>,
+    /// The menu tree, if available.
+    pub menu: Option<Vec<MenuItem>>,
 }
 
 /// Events sent from the tray backend to the GTK thread.
@@ -33,8 +44,14 @@ enum TrayUpdate {
 /// Commands sent from the GTK thread to the tray backend.
 #[derive(Debug)]
 enum TrayCommand {
-    /// Activate the tray item at the given address.
+    /// Activate the tray item at the given address (default click).
     Activate(String),
+    /// Activate a specific menu item by submenu ID.
+    MenuItemActivate {
+        address: String,
+        menu_path: String,
+        submenu_id: i32,
+    },
 }
 
 /// Displays system tray icons from applications using the SNI protocol.
@@ -63,13 +80,15 @@ impl BarModule for TrayModule {
 
         // GTK side: add/update/remove tray item buttons
         let container_clone = container.clone();
+        let item_states: TrayItemStates = Rc::new(RefCell::new(HashMap::new()));
         glib::spawn_future_local(async move {
             while let Ok(update) = rx.recv().await {
                 match update {
                     TrayUpdate::AddOrUpdate(info) => {
-                        add_or_update_tray_item(&container_clone, &info, &cmd_tx);
+                        add_or_update_tray_item(&container_clone, &info, &cmd_tx, &item_states);
                     }
                     TrayUpdate::Remove(address) => {
+                        item_states.borrow_mut().remove(&address);
                         remove_tray_item(&container_clone, &address);
                     }
                 }
@@ -97,8 +116,8 @@ async fn run_tray_backend(
     {
         let items = client.items();
         let items = items.lock().unwrap();
-        for (address, (item, _menu)) in items.iter() {
-            let info = tray_item_info(address, item);
+        for (address, (item, menu)) in items.iter() {
+            let info = tray_item_info(address, item, menu.as_ref());
             if tx.try_send(TrayUpdate::AddOrUpdate(info)).is_err() {
                 tracing::debug!("tray update channel full during initial sync");
             }
@@ -129,6 +148,16 @@ async fn run_tray_backend(
                             tracing::warn!("tray activate failed for {address}: {e}");
                         }
                     }
+                    Ok(TrayCommand::MenuItemActivate { address, menu_path, submenu_id }) => {
+                        let req = system_tray::client::ActivateRequest::MenuItem {
+                            address: address.clone(),
+                            menu_path,
+                            submenu_id,
+                        };
+                        if let Err(e) = client.activate(req).await {
+                            tracing::warn!("tray menu activate failed for {address}: {e}");
+                        }
+                    }
                     Err(_) => break,
                 }
             }
@@ -146,7 +175,8 @@ async fn handle_tray_event(
 ) {
     match event {
         system_tray::client::Event::Add(address, item) => {
-            let info = tray_item_info(&address, &item);
+            // No menu yet on initial Add; it arrives via UpdateEvent::Menu.
+            let info = tray_item_info(&address, &item, None);
             let _ = tx.send(TrayUpdate::AddOrUpdate(info)).await;
         }
         system_tray::client::Event::Update(address, _update) => {
@@ -155,7 +185,7 @@ async fn handle_tray_event(
                 let items = items.lock().unwrap();
                 items
                     .get(&address)
-                    .map(|(item, _menu)| tray_item_info(&address, item))
+                    .map(|(item, menu)| tray_item_info(&address, item, menu.as_ref()))
             };
             if let Some(info) = info {
                 let _ = tx.send(TrayUpdate::AddOrUpdate(info)).await;
@@ -167,8 +197,12 @@ async fn handle_tray_event(
     }
 }
 
-/// Convert a StatusNotifierItem to our simplified TrayItemInfo.
-fn tray_item_info(address: &str, item: &system_tray::item::StatusNotifierItem) -> TrayItemInfo {
+/// Convert a StatusNotifierItem (and optional menu) to our simplified TrayItemInfo.
+fn tray_item_info(
+    address: &str,
+    item: &system_tray::item::StatusNotifierItem,
+    menu: Option<&system_tray::menu::TrayMenu>,
+) -> TrayItemInfo {
     let icon_pixmap = item
         .icon_pixmap
         .as_ref()
@@ -185,15 +219,44 @@ fn tray_item_info(address: &str, item: &system_tray::item::StatusNotifierItem) -
         title: item.title.clone(),
         icon_name: item.icon_name.clone(),
         icon_pixmap,
+        menu_path: item.menu.clone(),
+        menu: menu.map(|m| m.submenus.clone()),
     }
 }
+
+/// Per-tray-item state stored on the GTK side.
+struct TrayItemState {
+    menu_items: Vec<MenuItem>,
+    menu_path: Option<String>,
+}
+
+type TrayItemStates = Rc<RefCell<HashMap<String, Rc<RefCell<TrayItemState>>>>>;
 
 /// Add or update a tray item button in the container.
 fn add_or_update_tray_item(
     container: &gtk4::Box,
     info: &TrayItemInfo,
     cmd_tx: &async_channel::Sender<TrayCommand>,
+    item_states: &TrayItemStates,
 ) {
+    // Store/update menu state for this item.
+    // Done before the existing-item check so menu updates are never dropped.
+    let state = if let Some(existing) = item_states.borrow().get(&info.address) {
+        let mut st = existing.borrow_mut();
+        st.menu_items = info.menu.clone().unwrap_or_default();
+        st.menu_path = info.menu_path.clone();
+        existing.clone()
+    } else {
+        let state = Rc::new(RefCell::new(TrayItemState {
+            menu_items: info.menu.clone().unwrap_or_default(),
+            menu_path: info.menu_path.clone(),
+        }));
+        item_states
+            .borrow_mut()
+            .insert(info.address.clone(), state.clone());
+        state
+    };
+
     // Look for an existing button with this address
     let mut child = container.first_child();
     while let Some(widget) = child {
@@ -226,19 +289,150 @@ fn add_or_update_tray_item(
         set_pixmap_icon(&btn, info);
     }
 
-    // Click to activate via the backend
+    // Click: show menu popover if menu is available, otherwise default activate.
     let cmd_tx = cmd_tx.clone();
     let address = info.address.clone();
-    btn.connect_clicked(move |_| {
-        if cmd_tx
-            .try_send(TrayCommand::Activate(address.clone()))
-            .is_err()
-        {
-            tracing::debug!("tray command channel full (activate)");
+    btn.connect_clicked(move |btn| {
+        let st = state.borrow();
+        if st.menu_items.is_empty() || st.menu_path.is_none() {
+            // No menu — fall back to default activation.
+            let _ = cmd_tx.try_send(TrayCommand::Activate(address.clone()));
+            return;
         }
+        show_tray_menu(btn, &st.menu_items, &address, st.menu_path.as_deref().unwrap(), &cmd_tx);
     });
 
     container.append(&btn);
+}
+
+/// Build and show a popover menu for a tray item.
+fn show_tray_menu(
+    btn: &gtk4::Button,
+    items: &[MenuItem],
+    address: &str,
+    menu_path: &str,
+    cmd_tx: &async_channel::Sender<TrayCommand>,
+) {
+    let menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    menu_box.add_css_class("psh-bar-tray-menu");
+
+    build_menu_level(&menu_box, items, address, menu_path, cmd_tx);
+
+    let popover = gtk4::Popover::new();
+    popover.set_child(Some(&menu_box));
+    popover.set_parent(btn);
+    popover.set_has_arrow(false);
+    popover.connect_closed(|p| p.unparent());
+    popover.popup();
+}
+
+/// Recursively build menu widgets for one level of menu items.
+fn build_menu_level(
+    container: &gtk4::Box,
+    items: &[MenuItem],
+    address: &str,
+    menu_path: &str,
+    cmd_tx: &async_channel::Sender<TrayCommand>,
+) {
+    for item in items {
+        if !item.visible {
+            continue;
+        }
+
+        if item.menu_type == MenuType::Separator {
+            let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+            container.append(&sep);
+            continue;
+        }
+
+        // Items with children_display == "submenu" get a nested submenu.
+        if item.children_display.as_deref() == Some("submenu") && !item.submenu.is_empty() {
+            let label_text = item.label.as_deref().unwrap_or("...");
+            let expander = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+
+            let header_btn = gtk4::Button::with_label(&format!("{label_text}  ▸"));
+            header_btn.add_css_class("psh-bar-tray-menu-item");
+            header_btn.set_halign(gtk4::Align::Fill);
+            if !item.enabled {
+                header_btn.set_sensitive(false);
+            }
+
+            let sub_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            sub_box.set_margin_start(12);
+            sub_box.set_visible(false);
+            build_menu_level(&sub_box, &item.submenu, address, menu_path, cmd_tx);
+
+            let sub_box_ref = sub_box.clone();
+            header_btn.connect_clicked(move |_| {
+                sub_box_ref.set_visible(!sub_box_ref.is_visible());
+            });
+
+            expander.append(&header_btn);
+            expander.append(&sub_box);
+            container.append(&expander);
+            continue;
+        }
+
+        let label_text = item.label.as_deref().unwrap_or("");
+        if label_text.is_empty() && item.submenu.is_empty() {
+            continue;
+        }
+
+        // Build the label with optional toggle indicator.
+        let display_label = match item.toggle_type {
+            ToggleType::Checkmark => {
+                let check = if item.toggle_state == ToggleState::On { "✓ " } else { "   " };
+                format!("{check}{label_text}")
+            }
+            ToggleType::Radio => {
+                let radio = if item.toggle_state == ToggleState::On { "● " } else { "○ " };
+                format!("{radio}{label_text}")
+            }
+            ToggleType::CannotBeToggled => label_text.to_string(),
+        };
+
+        let menu_btn = gtk4::Button::with_label(&display_label);
+        menu_btn.add_css_class("psh-bar-tray-menu-item");
+        menu_btn.set_halign(gtk4::Align::Fill);
+        if let Some(label) = menu_btn.child().and_then(|c| c.downcast::<gtk4::Label>().ok()) {
+            label.set_halign(gtk4::Align::Start);
+        }
+
+        if !item.enabled {
+            menu_btn.set_sensitive(false);
+        }
+
+        // If this item has submenu children (without children_display hint), show inline.
+        let has_inline_submenu = !item.submenu.is_empty();
+
+        let cmd_tx_click = cmd_tx.clone();
+        let address_click = address.to_string();
+        let menu_path_click = menu_path.to_string();
+        let submenu_id = item.id;
+        menu_btn.connect_clicked(move |btn| {
+            let _ = cmd_tx_click.try_send(TrayCommand::MenuItemActivate {
+                address: address_click.clone(),
+                menu_path: menu_path_click.clone(),
+                submenu_id,
+            });
+            // Close the popover.
+            if let Some(popover) = btn
+                .ancestor(gtk4::Popover::static_type())
+                .and_then(|w| w.downcast::<gtk4::Popover>().ok())
+            {
+                popover.popdown();
+            }
+        });
+
+        container.append(&menu_btn);
+
+        if has_inline_submenu {
+            let sub_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            sub_box.set_margin_start(12);
+            build_menu_level(&sub_box, &item.submenu, address, menu_path, cmd_tx);
+            container.append(&sub_box);
+        }
+    }
 }
 
 /// Set a pixmap icon on a tray button from ARGB32 data.
