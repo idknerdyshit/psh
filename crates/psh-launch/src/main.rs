@@ -30,13 +30,14 @@ fn main() {
         .application_id("com.psh.launch")
         .build();
 
-    let window_ref: Rc<RefCell<Option<gtk4::ApplicationWindow>>> = Rc::new(RefCell::new(None));
+    let window_ref: Rc<RefCell<Option<(gtk4::ApplicationWindow, gtk4::SearchEntry)>>> =
+        Rc::new(RefCell::new(None));
 
     let window_ref_activate = window_ref.clone();
     app.connect_activate(move |app| {
         // If window already exists, toggle it and return (single-instance).
-        if let Some(ref win) = *window_ref_activate.borrow() {
-            toggle_window(win);
+        if let Some((ref win, ref entry)) = *window_ref_activate.borrow() {
+            toggle_window(win, entry);
             return;
         }
 
@@ -140,18 +141,21 @@ fn main() {
             hide_window(&window_launch);
         });
 
+        // Handle Enter from the search entry — SearchEntry captures Enter
+        // internally (emitting `activate`) so it never reaches the window
+        // key controller.
+        let list_box_activate = list_box.clone();
+        search_entry.connect_activate(move |_| {
+            if let Some(row) = list_box_activate.selected_row() {
+                row.activate();
+            }
+        });
+
         let key_controller = gtk4::EventControllerKey::new();
         let window_key = window.clone();
-        let list_box_key = list_box.clone();
         key_controller.connect_key_pressed(move |_, key, _, _| match key {
             gtk4::gdk::Key::Escape => {
                 hide_window(&window_key);
-                glib::Propagation::Stop
-            }
-            gtk4::gdk::Key::Return | gtk4::gdk::Key::KP_Enter => {
-                if let Some(row) = list_box_key.selected_row() {
-                    row.activate();
-                }
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -160,7 +164,7 @@ fn main() {
 
         window.set_child(Some(&container));
 
-        *window_ref_activate.borrow_mut() = Some(window.clone());
+        *window_ref_activate.borrow_mut() = Some((window.clone(), search_entry.clone()));
 
         let search_entry_ref = search_entry.clone();
         let list_box_ref = list_box.clone();
@@ -231,7 +235,10 @@ fn main() {
                     );
                     search_entry_ref.set_text("");
                     window_ipc.present();
-                    search_entry_ref.grab_focus();
+                    let entry = search_entry_ref.clone();
+                    glib::idle_add_local_once(move || {
+                        entry.grab_focus();
+                    });
                 } else {
                     hide_window(&window_ipc);
                 }
@@ -259,11 +266,15 @@ fn main() {
 }
 
 /// Toggle the overlay window between visible and hidden states.
-fn toggle_window(window: &gtk4::ApplicationWindow) {
+fn toggle_window(window: &gtk4::ApplicationWindow, search_entry: &gtk4::SearchEntry) {
     if window.is_visible() {
         hide_window(window);
     } else {
         window.present();
+        let entry = search_entry.clone();
+        glib::idle_add_local_once(move || {
+            entry.grab_focus();
+        });
     }
 }
 

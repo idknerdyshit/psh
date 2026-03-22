@@ -229,27 +229,44 @@ async fn fetch_org_id(
 }
 
 /// Parse the usage API response JSON into a `ClaudeUsage`.
+///
+/// The API returns utilization (% used) under `five_hour` and `seven_day`
+/// objects, each with `utilization` and `resets_at` fields. Per-model
+/// breakdowns appear as `seven_day_{model}` keys.
 pub(crate) fn parse_usage_response(body: &serde_json::Value) -> Result<ClaudeUsage, String> {
-    // The API response structure varies; extract what we can defensively.
-    // Known fields from claude-battery: sessionRemaining, weeklyRemaining as percentages.
-    let session_pct = extract_pct(body, "sessionRemaining").unwrap_or(0.0);
-    let weekly_pct = extract_pct(body, "weeklyRemaining").unwrap_or(0.0);
+    let session_pct = body
+        .get("five_hour")
+        .and_then(|v| v.get("utilization"))
+        .and_then(|v| v.as_f64())
+        .map(|u| 100.0 - u)
+        .unwrap_or(0.0);
+
+    let weekly_pct = body
+        .get("seven_day")
+        .and_then(|v| v.get("utilization"))
+        .and_then(|v| v.as_f64())
+        .map(|u| 100.0 - u)
+        .unwrap_or(0.0);
 
     let session_reset = body
-        .get("sessionResetDate")
+        .get("five_hour")
+        .and_then(|v| v.get("resets_at"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let weekly_reset = body
-        .get("weeklyResetDate")
+        .get("seven_day")
+        .and_then(|v| v.get("resets_at"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    // Per-model breakdown if available
+    // Per-model breakdowns appear as seven_day_{model} keys
     let mut models = Vec::new();
-    if let Some(model_map) = body.get("models").and_then(|v| v.as_object()) {
-        for (name, val) in model_map {
-            if let Some(pct) = val.get("remaining").and_then(|v| v.as_f64()) {
-                models.push((name.clone(), pct));
+    if let Some(obj) = body.as_object() {
+        for (key, val) in obj {
+            if let Some(model) = key.strip_prefix("seven_day_") {
+                if let Some(util) = val.get("utilization").and_then(|v| v.as_f64()) {
+                    models.push((model.to_string(), 100.0 - util));
+                }
             }
         }
     }
@@ -263,16 +280,11 @@ pub(crate) fn parse_usage_response(body: &serde_json::Value) -> Result<ClaudeUsa
     })
 }
 
-/// Extract a percentage value from the JSON body.
-fn extract_pct(body: &serde_json::Value, key: &str) -> Option<f64> {
-    body.get(key).and_then(|v| v.as_f64())
-}
-
 /// Parse display format from config string.
 pub(crate) fn parse_display_format(s: Option<&str>) -> DisplayFormat {
     match s {
-        Some("both") => DisplayFormat::Both,
-        _ => DisplayFormat::Percent,
+        Some("percent") => DisplayFormat::Percent,
+        _ => DisplayFormat::Both,
     }
 }
 
@@ -354,11 +366,11 @@ mod tests {
 
     #[test]
     fn test_parse_display_format() {
-        assert_eq!(parse_display_format(None), DisplayFormat::Percent);
+        assert_eq!(parse_display_format(None), DisplayFormat::Both);
         assert_eq!(parse_display_format(Some("percent")), DisplayFormat::Percent);
         assert_eq!(parse_display_format(Some("both")), DisplayFormat::Both);
-        assert_eq!(parse_display_format(Some("invalid")), DisplayFormat::Percent);
-        assert_eq!(parse_display_format(Some("")), DisplayFormat::Percent);
+        assert_eq!(parse_display_format(Some("invalid")), DisplayFormat::Both);
+        assert_eq!(parse_display_format(Some("")), DisplayFormat::Both);
     }
 
     #[test]
@@ -425,21 +437,29 @@ mod tests {
     #[test]
     fn test_parse_usage_response() {
         let json = serde_json::json!({
-            "sessionRemaining": 73.5,
-            "weeklyRemaining": 85.2,
-            "sessionResetDate": "2026-03-21T18:00:00Z",
-            "weeklyResetDate": "2026-03-28T00:00:00Z",
-            "models": {
-                "opus": { "remaining": 60.0 },
-                "sonnet": { "remaining": 90.0 }
+            "five_hour": {
+                "utilization": 4.0,
+                "resets_at": "2026-03-23T01:00:00Z"
+            },
+            "seven_day": {
+                "utilization": 15.0,
+                "resets_at": "2026-03-27T00:00:00Z"
+            },
+            "seven_day_opus": {
+                "utilization": 40.0,
+                "resets_at": "2026-03-27T00:00:00Z"
+            },
+            "seven_day_sonnet": {
+                "utilization": 1.0,
+                "resets_at": "2026-03-27T00:00:00Z"
             }
         });
 
         let usage = parse_usage_response(&json).unwrap();
-        assert!((usage.session_pct - 73.5).abs() < f64::EPSILON);
-        assert!((usage.weekly_pct - 85.2).abs() < f64::EPSILON);
-        assert_eq!(usage.session_reset.as_deref(), Some("2026-03-21T18:00:00Z"));
-        assert_eq!(usage.weekly_reset.as_deref(), Some("2026-03-28T00:00:00Z"));
+        assert!((usage.session_pct - 96.0).abs() < f64::EPSILON);
+        assert!((usage.weekly_pct - 85.0).abs() < f64::EPSILON);
+        assert_eq!(usage.session_reset.as_deref(), Some("2026-03-23T01:00:00Z"));
+        assert_eq!(usage.weekly_reset.as_deref(), Some("2026-03-27T00:00:00Z"));
         assert_eq!(usage.models.len(), 2);
     }
 

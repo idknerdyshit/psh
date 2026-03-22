@@ -104,8 +104,12 @@ pub async fn event_stream() -> Result<BufReader<UnixStream>> {
         .await
         .map_err(|e| psh_core::PshError::Ipc(e.to_string()))?;
 
-    // Do NOT shutdown the write half here — niri keeps the connection open
-    // for the event stream and we need to keep reading from it.
+    // Shutdown the write half so niri knows the request is complete.
+    // Niri sends events on the read half; the write half is not needed.
+    stream
+        .shutdown()
+        .await
+        .map_err(|e| psh_core::PshError::Ipc(e.to_string()))?;
 
     // Read the initial Ok response line
     let mut reader = BufReader::new(stream);
