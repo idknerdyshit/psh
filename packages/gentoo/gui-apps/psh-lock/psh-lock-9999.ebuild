@@ -33,6 +33,8 @@ src_compile() {
 
 src_install() {
 	dobin "$(cargo_target_dir)/psh-lock"
+	insinto /etc/pam.d
+	newins "${S}/pam.d/psh-lock" psh-lock
 }
 
 pkg_postinst() {

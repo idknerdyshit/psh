@@ -403,7 +403,7 @@ impl KeyboardHandler for LockState {
                 // Take ownership so the PAM thread gets the only copy.
                 // self.password is replaced with an empty string immediately.
                 let pw = std::mem::take(&mut self.password);
-                pam::try_authenticate(pw, self.pam_sender.clone());
+                pam::try_authenticate(self.username.clone(), pw, self.pam_sender.clone());
                 self.redraw_all(qh);
             }
             return;

@@ -22,9 +22,9 @@ pub enum PamResult {
 /// loop can handle it without blocking.
 /// Takes ownership of the password string so the caller's copy can be
 /// immediately zeroized, ensuring only one plaintext copy exists at a time.
-pub fn try_authenticate(mut password: String, sender: Sender<PamResult>) {
+pub fn try_authenticate(username: String, mut password: String, sender: Sender<PamResult>) {
     std::thread::spawn(move || {
-        let result = authenticate_pam(&password);
+        let result = authenticate_pam(&username, &password);
         password.zeroize();
         let _ = sender.send(result);
     });
@@ -34,9 +34,9 @@ pub fn try_authenticate(mut password: String, sender: Sender<PamResult>) {
 ///
 /// Uses `pam_client::conv_mock::Conversation` which stores the password and
 /// supplies it when PAM asks for it via the conversation function.
-fn authenticate_pam(password: &str) -> PamResult {
-    let conversation = Conversation::with_credentials("", password);
-    let mut context = match Context::new("psh-lock", None, conversation) {
+fn authenticate_pam(username: &str, password: &str) -> PamResult {
+    let conversation = Conversation::with_credentials(username, password);
+    let mut context = match Context::new("psh-lock", Some(username), conversation) {
         Ok(ctx) => ctx,
         Err(e) => {
             tracing::error!("PAM context creation failed: {e}");

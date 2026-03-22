@@ -1,6 +1,6 @@
 # Maintainer: psh developers
 pkgname=psh
-pkgver=0.1.2
+pkgver=0.1.4
 pkgrel=1
 pkgdesc='Wayland desktop environment component suite'
 arch=('x86_64')
@@ -28,4 +28,5 @@ package() {
     install -Dm644 assets/themes/default.css "$pkgdir/usr/share/psh/themes/default.css"
     install -Dm644 config/psh.toml "$pkgdir/usr/share/doc/$pkgname/psh.toml"
     install -Dm644 config/niri.kdl "$pkgdir/usr/share/doc/$pkgname/niri.kdl"
+    install -Dm644 pam.d/psh-lock "$pkgdir/etc/pam.d/psh-lock"
 }
