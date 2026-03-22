@@ -84,6 +84,7 @@ fn main() {
         seat: SeatState::new(&globals, &qh),
         shm,
         session_lock_state,
+        pending_session_lock: None,
         session_lock: None,
         lock_surfaces: Vec::new(),
         keyboard: None,
@@ -102,8 +103,10 @@ fn main() {
         running: true,
     };
 
-    // Request the session lock.
-    state.session_lock = Some(
+    // Request the session lock. Store in `pending_session_lock` so that
+    // `new_output()` does not create premature lock surfaces before the
+    // compositor confirms the lock. `locked()` moves it to `session_lock`.
+    state.pending_session_lock = Some(
         state
             .session_lock_state
             .lock(&qh)

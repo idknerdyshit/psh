@@ -71,6 +71,11 @@ pub struct LockState {
 
     // Session lock
     pub session_lock_state: SessionLockState,
+    /// Holds the lock object between `lock()` and the `locked` callback so it
+    /// stays alive without allowing `new_output()` to create premature surfaces.
+    pub pending_session_lock: Option<SessionLock>,
+    /// Set only after the compositor confirms the lock via the `locked` callback.
+    /// `new_output()` uses this to create surfaces for hotplugged outputs.
     pub session_lock: Option<SessionLock>,
     pub lock_surfaces: Vec<LockSurface>,
 
@@ -245,6 +250,9 @@ impl SessionLockHandler for LockState {
     fn locked(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, session_lock: SessionLock) {
         tracing::info!("session locked, creating lock surfaces");
 
+        // Drop the pending reference — the callback gives us the confirmed lock.
+        self.pending_session_lock = None;
+
         for output in self.output.outputs() {
             let surface = self.compositor.create_surface(qh);
             let scale = self
@@ -264,6 +272,7 @@ impl SessionLockHandler for LockState {
             });
         }
 
+        // Store the confirmed lock — `new_output()` uses this for hotplugged outputs.
         self.session_lock = Some(session_lock);
     }
 

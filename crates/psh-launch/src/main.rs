@@ -247,8 +247,10 @@ fn main() {
             }
         });
 
+        // Present then immediately hide so the window is realized but not
+        // visible on startup — the user toggles it via IPC.
         window.present();
-        search_entry.grab_focus();
+        window.set_visible(false);
     });
 
     app.run_with_args::<String>(&[]);
