@@ -63,8 +63,6 @@ fn main() {
 
         let window = gtk4::ApplicationWindow::builder()
             .application(app)
-            .default_width(600)
-            .default_height(400)
             .decorated(false)
             .build();
 
@@ -72,10 +70,16 @@ fn main() {
         window.set_layer(gtk4_layer_shell::Layer::Overlay);
         window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::Exclusive);
         window.set_anchor(gtk4_layer_shell::Edge::Top, true);
-        window.set_margin(gtk4_layer_shell::Edge::Top, 200);
+        window.set_anchor(gtk4_layer_shell::Edge::Bottom, true);
+        window.set_anchor(gtk4_layer_shell::Edge::Left, true);
+        window.set_anchor(gtk4_layer_shell::Edge::Right, true);
 
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.add_css_class("psh-launch");
+        container.set_halign(gtk4::Align::Center);
+        container.set_valign(gtk4::Align::Start);
+        container.set_margin_top(200);
+        container.set_size_request(600, -1);
 
         let search_entry = gtk4::SearchEntry::new();
         search_entry.add_css_class("psh-launch-search");
@@ -123,35 +127,37 @@ fn main() {
         let entries_launch = entries.clone();
         let terminal_cmd_launch = terminal_cmd.clone();
         list_box.connect_row_activated(move |_, row| {
-            let Some(idx) = row
-                .widget_name()
-                .strip_prefix("idx:")
-                .and_then(|s| s.parse::<usize>().ok())
-            else {
-                return;
-            };
-
-            let borrowed = entries_launch.borrow();
-            let Some(entry) = borrowed.get(idx) else {
-                return;
-            };
-
-            launch_app(entry, terminal_cmd_launch.borrow().as_deref());
-            tracker_launch.borrow_mut().record(&entry.exec);
-            hide_window(&window_launch);
+            activate_row(
+                row,
+                &entries_launch.borrow(),
+                &mut tracker_launch.borrow_mut(),
+                terminal_cmd_launch.borrow().as_deref(),
+                &window_launch,
+            );
         });
 
         // Handle Enter from the search entry — SearchEntry captures Enter
         // internally (emitting `activate`) so it never reaches the window
         // key controller.
         let list_box_activate = list_box.clone();
+        let window_activate = window.clone();
+        let entries_activate = entries.clone();
+        let tracker_activate = tracker.clone();
+        let terminal_cmd_activate = terminal_cmd.clone();
         search_entry.connect_activate(move |_| {
             if let Some(row) = list_box_activate.selected_row() {
-                row.activate();
+                activate_row(
+                    &row,
+                    &entries_activate.borrow(),
+                    &mut tracker_activate.borrow_mut(),
+                    terminal_cmd_activate.borrow().as_deref(),
+                    &window_activate,
+                );
             }
         });
 
         let key_controller = gtk4::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let window_key = window.clone();
         key_controller.connect_key_pressed(move |_, key, _, _| match key {
             gtk4::gdk::Key::Escape => {
@@ -161,6 +167,25 @@ fn main() {
             _ => glib::Propagation::Proceed,
         });
         window.add_controller(key_controller);
+
+        // Dismiss when clicking outside the launcher content area.
+        let click_dismiss = gtk4::GestureClick::new();
+        click_dismiss.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let window_dismiss = window.clone();
+        let container_dismiss = container.clone();
+        click_dismiss.connect_pressed(move |gesture, _, x, y| {
+            if let Some((cx, cy)) =
+                container_dismiss.translate_coordinates(&window_dismiss, 0.0, 0.0)
+            {
+                let cw = container_dismiss.width() as f64;
+                let ch = container_dismiss.height() as f64;
+                if x < cx || x > cx + cw || y < cy || y > cy + ch {
+                    hide_window(&window_dismiss);
+                    gesture.set_state(gtk4::EventSequenceState::Claimed);
+                }
+            }
+        });
+        window.add_controller(click_dismiss);
 
         window.set_child(Some(&container));
 
@@ -276,6 +301,29 @@ fn toggle_window(window: &gtk4::ApplicationWindow, search_entry: &gtk4::SearchEn
             entry.grab_focus();
         });
     }
+}
+
+/// Launch the app associated with a list box row.
+fn activate_row(
+    row: &gtk4::ListBoxRow,
+    entries: &[desktop::DesktopEntry],
+    tracker: &mut frecency::FrecencyTracker,
+    terminal_cmd: Option<&str>,
+    window: &gtk4::ApplicationWindow,
+) {
+    let Some(idx) = row
+        .widget_name()
+        .strip_prefix("idx:")
+        .and_then(|s| s.parse::<usize>().ok())
+    else {
+        return;
+    };
+    let Some(entry) = entries.get(idx) else {
+        return;
+    };
+    launch_app(entry, terminal_cmd);
+    tracker.record(&entry.exec);
+    hide_window(window);
 }
 
 /// Hide the window without destroying it.

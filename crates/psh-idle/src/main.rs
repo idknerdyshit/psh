@@ -208,10 +208,14 @@ impl SeatHandler for IdleState {
         &mut self,
         _conn: &Connection,
         qh: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
+        seat: wl_seat::WlSeat,
         _capability: Capability,
     ) {
-        // Once we have any capability, try to set up idle notification.
+        // SeatState::new() doesn't call new_seat() for pre-existing seats,
+        // so store the seat here if we haven't seen one yet.
+        if self.seat.is_none() {
+            self.seat = Some(seat);
+        }
         self.setup_idle_notification(qh);
     }
 
@@ -335,9 +339,10 @@ async fn monitor_sleep(
                 break;
             }
             // Release the inhibitor so logind can proceed with sleep.
-            // psh-lock should have started by now; the calloop processes
-            // Lock synchronously before we reach this point because
-            // Sender::send is synchronous for calloop channels.
+            // NOTE: Sender::send only enqueues the message — the main loop
+            // processes it asynchronously.  There is a small race where sleep
+            // may proceed before psh-lock actually starts.  In practice,
+            // logind's delay inhibitor gives enough headroom for the spawn.
             drop(inhibitor.take());
         } else {
             tracing::debug!("system resumed from sleep, re-acquiring inhibitor");
