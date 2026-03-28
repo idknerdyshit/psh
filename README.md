@@ -8,7 +8,7 @@ psh provides the essential desktop shell utilities -- bar, notifications, app la
 
 | Component | Description | Stack |
 |-----------|-------------|-------|
-| **psh-core** | Shared library: config, IPC, theming, D-Bus helpers | tokio, zbus, serde |
+| **psh-core** | Shared library: config, IPC, theming, palette export, D-Bus helpers | tokio, zbus, serde |
 | **psh-bar** | System bar and IPC hub | GTK4 + layer-shell |
 | **psh-notify** | Notification daemon (`org.freedesktop.Notifications`) | GTK4 + layer-shell + zbus |
 | **psh-polkit** | Polkit authentication agent | GTK4 + layer-shell + zbus |
@@ -46,7 +46,7 @@ just ci       # all checks
 ## Testing
 
 ```sh
-cargo test --workspace   # 154 unit tests
+cargo test --workspace   # 190 unit tests
 cargo clippy --workspace # lint check
 ```
 
@@ -72,6 +72,9 @@ position = "top"              # top | bottom
 # max_title_length = 50
 # volume_step = 5
 # battery_device = "BAT0"
+# claude_session_key = "sk-ant-sid01-..."  # or CLAUDE_SESSION_KEY env var
+# claude_display = "percent"               # "percent" | "both"
+# claude_poll_interval = 120               # seconds
 
 [notify]
 max_visible = 5
@@ -88,8 +91,14 @@ icon_size = 48
 # max_results = 20
 
 [wall]
-# path = "/home/user/wallpaper.png"
+# path = "/home/user/wallpaper.png"   # file, animated GIF/APNG/WebP, or directory (slideshow)
 mode = "fill"                 # fill | fit | center | stretch | tile
+# interval = 300              # slideshow interval in seconds
+
+# Per-output overrides
+# [wall.outputs."DP-1"]
+# path = "/path/to/other.png"
+# mode = "center"
 
 [lock]
 show_clock = true
@@ -102,7 +111,6 @@ font_size = 24.0
 password_dot_color = "#cdd6f4"
 error_color = "#f38ba8"
 timeout_secs = 0              # 0 = disabled; blanks screen + clears password after idle
-# background_image = "/path/to/image.png"
 blur_background = false       # apply gaussian blur to background_image
 
 [idle]
@@ -134,7 +142,8 @@ psh ping        # check if the hub is running
 psh lock        # lock the screen
 psh launcher    # toggle the app launcher
 psh clipboard   # show clipboard history
-psh wall set /path/to/image.png   # change wallpaper
+psh wall set /path/to/image.png             # change wallpaper
+psh wall set /path/to/image.png --output DP-1  # change wallpaper on specific output
 psh reload      # broadcast config-reload signal
 psh theme apply # generate GTK3/GTK4/Qt color overrides from psh palette
 ```
@@ -162,9 +171,11 @@ systemctl --user enable --now psh.target
 With [just](https://github.com/casey/just):
 
 ```sh
-just install          # installs binaries, systemd units, themes
+just install          # installs binaries, systemd units, themes, config
 just install-bin      # binaries only
 just install-systemd  # systemd units only
+just install-themes   # themes only
+just install-config   # example config only
 just uninstall        # remove everything
 ```
 
@@ -172,17 +183,37 @@ Packages are available for:
 - **Arch Linux (AUR)**: see `packages/aur/PKGBUILD`
 - **Gentoo**: see `packages/gentoo/`
 
+## Releasing
+
+Releases use [cargo-release](https://github.com/crate-ci/cargo-release) with per-crate independent versioning. Only bump crates that actually changed.
+
+```sh
+# Preview what will happen (always do this first)
+cargo release patch -p psh-wall --dry-run
+
+# Release a single crate (bump patch: 0.1.8 → 0.1.9)
+cargo release patch -p psh-wall
+
+# Release multiple crates together
+cargo release patch -p psh-core -p psh-bar
+
+# Minor or major bumps
+cargo release minor -p psh-bar
+```
+
+Each crate gets its own git tag (e.g., `psh-wall-v0.1.9`). See `release.toml` for configuration.
+
 ## Status
 
-All components are feature-complete. See [PLAN.md](PLAN.md) for the detailed history.
+All components are feature-complete.
 
-- **psh-core**: Config (with validation + hot-reload), IPC, theming (with hot-reload), palette export, D-Bus, logging (25 tests)
-- **psh-bar**: 10 modules, IPC hub, configurable layout, graceful shutdown (40 tests)
-- **psh-notify**: Full fd.o Notifications spec (14 tests)
+- **psh-core**: Config (with validation + hot-reload), IPC, theming (with hot-reload), palette export (GTK3/GTK4/Qt), D-Bus, logging (27 tests)
+- **psh-bar**: 11 modules (claude, clock, battery, workspaces, window title, volume, network, tray, launcher, clipboard, notifications), IPC hub, configurable layout (50 tests)
+- **psh-notify**: Full fd.o Notifications spec, urgency styling, action buttons, replace-id, icons, markup sanitization
 - **psh-polkit**: Full polkit agent with security hardening (12 tests)
-- **psh-launch**: Fuzzy search, frecency, terminal apps (17 tests)
-- **psh-clip**: Clipboard monitoring, persistence, image support (39 tests)
-- **psh-wall**: Multi-output wallpaper with 5 modes, config hot-reload
+- **psh-launch**: Fuzzy search, frecency, terminal apps, icon display (17 tests)
+- **psh-clip**: Clipboard monitoring, persistence, image support, search/filter (41 tests)
+- **psh-wall**: Per-output wallpapers, static/animated/slideshow, 5 display modes, config hot-reload (22 tests)
 - **psh-lock**: ext-session-lock-v1, PAM, tiny-skia rendering, inactivity timeout, background blur (21 tests)
 - **psh-idle**: Idle timeout + logind sleep detection, config hot-reload
 - **psh**: CLI control tool (lock, launcher, clipboard, wallpaper, reload, ping, theme apply)
