@@ -455,66 +455,39 @@ CRATES="
 
 inherit cargo
 
-DESCRIPTION="psh Wayland desktop environment (meta-package)"
+DESCRIPTION="Screen locker for the psh Wayland desktop environment"
 HOMEPAGE="https://github.com/idknerdyshit/psh"
 SRC_URI="
-	https://github.com/idknerdyshit/psh/archive/v${PV}.tar.gz -> psh-${PV}.tar.gz
+	https://github.com/idknerdyshit/psh/archive/${PN}-v${PV}.tar.gz -> ${PN}-${PV}.tar.gz
 	${CARGO_CRATE_URIS}
 "
 
-S="${WORKDIR}/psh-${PV}"
+S="${WORKDIR}/psh-${PN}-v${PV}"
 
 LICENSE="GPL-3+"
 SLOT="0"
 KEYWORDS="~amd64"
 
-RDEPEND="
-	>=gui-apps/psh-bar-${PV}
-	>=gui-apps/psh-notify-${PV}
-	>=gui-apps/psh-polkit-${PV}
-	>=gui-apps/psh-launch-${PV}
-	>=gui-apps/psh-clip-${PV}
-	>=gui-apps/psh-wall-${PV}
-	>=gui-apps/psh-lock-${PV}
-	>=gui-apps/psh-idle-${PV}
+DEPEND="
+	dev-libs/wayland
+	sys-libs/pam
 "
-PDEPEND="virtual/notification-daemon"
-
-QA_FLAGS_IGNORED="usr/bin/psh"
+RDEPEND="${DEPEND}"
+QA_FLAGS_IGNORED="usr/bin/psh-lock"
 
 src_compile() {
-	cargo_src_compile --bin psh
+	cargo_src_compile --bin psh-lock
 }
 
 src_install() {
-	# Install the psh CLI control binary
-	dobin "$(cargo_target_dir)/psh"
-
-	# Install the systemd target that ties all components together
-	insinto /usr/lib/systemd/user
-	doins "${S}/systemd/psh.target"
-
-	# Install shared assets (themes)
-	insinto /usr/share/psh/themes
-	doins "${S}/assets/themes/"*
-
-	# Install example configs
-	insinto /usr/share/doc/${PF}
-	doins "${S}/config/psh.toml"
-	doins "${S}/config/niri.kdl"
+	dobin "$(cargo_target_dir)/psh-lock"
+	insinto /etc/pam.d
+	newins "${S}/pam.d/psh-lock" psh-lock
 }
 
 pkg_postinst() {
-	elog "To start the psh desktop environment:"
-	elog "  systemctl --user enable --now psh.target"
+	elog "psh-lock uses ext-session-lock-v1 — your compositor must support it."
+	elog "PAM authentication is used; ensure your PAM config is correct."
 	elog ""
-	elog "Example configs installed to /usr/share/doc/${PF}/:"
-	elog "  psh.toml  — psh component configuration"
-	elog "  niri.kdl  — example niri compositor config with psh keybindings"
-	elog ""
-	elog "Copy to get started:"
-	elog "  mkdir -p ~/.config/psh"
-	elog "  cp /usr/share/doc/${PF}/psh.toml ~/.config/psh/"
-	elog ""
-	elog "CLI control tool: psh --help"
+	elog "Lock manually: psh lock"
 }
