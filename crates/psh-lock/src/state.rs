@@ -27,8 +27,12 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler, raw::RawPool},
 };
 use wayland_client::{
-    Connection, Proxy, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     protocol::{wl_buffer, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
+};
+use wayland_protocols_wlr::output_power_management::v1::client::{
+    zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
+    zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
 };
 use std::time::Instant;
 
@@ -100,6 +104,11 @@ pub struct LockState {
     // Inactivity timeout
     pub last_input: Instant,
     pub blanked: bool,
+    pub dpms_active: bool,
+
+    // Output power management (DPMS)
+    pub power_manager: Option<ZwlrOutputPowerManagerV1>,
+    pub output_power: Vec<ZwlrOutputPowerV1>,
 
     // Event loop
     pub conn: Connection,
@@ -215,6 +224,34 @@ impl LockState {
         self.password.zeroize();
     }
 
+    /// Power off all outputs via DPMS (if the protocol is available).
+    pub fn dpms_off(&self) {
+        for power in &self.output_power {
+            power.set_mode(zwlr_output_power_v1::Mode::Off);
+        }
+        if !self.output_power.is_empty() {
+            tracing::info!("DPMS: powering off {} output(s)", self.output_power.len());
+        }
+    }
+
+    /// Power on all outputs via DPMS (if the protocol is available).
+    pub fn dpms_on(&self) {
+        for power in &self.output_power {
+            power.set_mode(zwlr_output_power_v1::Mode::On);
+        }
+        if !self.output_power.is_empty() {
+            tracing::info!("DPMS: powering on {} output(s)", self.output_power.len());
+        }
+    }
+
+    /// Create a power control for an output (if the manager is available).
+    pub fn create_output_power(&mut self, output: &wl_output::WlOutput, qh: &QueueHandle<Self>) {
+        if let Some(ref manager) = self.power_manager {
+            let power = manager.get_output_power(output, qh, ());
+            self.output_power.push(power);
+        }
+    }
+
     /// Handle a PAM authentication result from the background thread.
     pub fn handle_pam_result(&mut self, result: PamResult) {
         match result {
@@ -222,6 +259,10 @@ impl LockState {
                 tracing::info!("authentication successful, unlocking");
                 self.auth_state = AuthState::Unlocked;
                 self.clear_password();
+                if self.dpms_active {
+                    self.dpms_active = false;
+                    self.dpms_on();
+                }
 
                 if let Some(lock) = self.session_lock.take() {
                     lock.unlock();
@@ -267,15 +308,17 @@ impl SessionLockHandler for LockState {
         // Drop the pending reference — the callback gives us the confirmed lock.
         self.pending_session_lock = None;
 
-        for output in self.output.outputs() {
+        // Collect outputs first to avoid borrowing self during iteration.
+        let outputs: Vec<_> = self.output.outputs().collect();
+        for output in &outputs {
             let surface = self.compositor.create_surface(qh);
             let scale = self
                 .output
-                .info(&output)
+                .info(output)
                 .map(|i| i.scale_factor)
                 .unwrap_or(1);
 
-            let lock_surface = session_lock.create_lock_surface(surface, &output, qh);
+            let lock_surface = session_lock.create_lock_surface(surface, output, qh);
 
             self.lock_surfaces.push(LockSurface {
                 lock_surface,
@@ -286,22 +329,31 @@ impl SessionLockHandler for LockState {
                 pool: None,
                 pool_size: 0,
             });
+
+            self.create_output_power(output, qh);
         }
 
         // Store the confirmed lock — `new_output()` uses this for hotplugged outputs.
         self.session_lock = Some(session_lock);
 
-        // Insert inactivity timeout timer if configured.
-        if self.config.timeout_secs > 0 {
+        // Insert inactivity timeout timer if any timeout is configured.
+        let has_blank = self.config.blank_timeout_secs > 0;
+        let has_dpms = self.config.dpms_timeout_secs > 0 && !self.output_power.is_empty();
+        if has_blank || has_dpms {
             let qh_clone = qh.clone();
             let _ = self.loop_handle.insert_source(
                 Timer::from_duration(std::time::Duration::from_secs(1)),
                 move |_, _, state| {
-                    if state.config.timeout_secs > 0
+                    if matches!(state.auth_state, AuthState::Authenticating) {
+                        return TimeoutAction::ToDuration(std::time::Duration::from_secs(1));
+                    }
+
+                    let elapsed = state.last_input.elapsed();
+
+                    // Stage 1: blank the screen and clear password.
+                    if state.config.blank_timeout_secs > 0
                         && !state.blanked
-                        && !matches!(state.auth_state, AuthState::Authenticating)
-                        && state.last_input.elapsed()
-                            >= std::time::Duration::from_secs(state.config.timeout_secs)
+                        && elapsed >= std::time::Duration::from_secs(state.config.blank_timeout_secs)
                     {
                         tracing::info!("inactivity timeout, blanking screen");
                         state.clear_password();
@@ -309,6 +361,24 @@ impl SessionLockHandler for LockState {
                         state.blanked = true;
                         state.redraw_all(&qh_clone);
                     }
+
+                    // Stage 2: power off monitors via DPMS.
+                    if state.config.dpms_timeout_secs > 0
+                        && !state.dpms_active
+                        && elapsed >= std::time::Duration::from_secs(state.config.dpms_timeout_secs)
+                    {
+                        // Ensure screen is blanked first (in case dpms_timeout < blank_timeout
+                        // or blank_timeout is 0).
+                        if !state.blanked {
+                            state.clear_password();
+                            state.auth_state = AuthState::Idle;
+                            state.blanked = true;
+                            state.redraw_all(&qh_clone);
+                        }
+                        state.dpms_active = true;
+                        state.dpms_off();
+                    }
+
                     TimeoutAction::ToDuration(std::time::Duration::from_secs(1))
                 },
             );
@@ -427,7 +497,11 @@ impl KeyboardHandler for LockState {
     ) {
         // Reset inactivity timer on any keypress.
         self.last_input = Instant::now();
-        if self.blanked {
+        if self.blanked || self.dpms_active {
+            if self.dpms_active {
+                self.dpms_active = false;
+                self.dpms_on();
+            }
             self.blanked = false;
             self.redraw_all(qh);
             return; // Consume the wake keypress.
@@ -610,6 +684,7 @@ impl OutputHandler for LockState {
                 pool_size: 0,
             });
 
+            self.create_output_power(&output, qh);
             tracing::info!("created lock surface for hotplugged output");
         }
     }
@@ -655,6 +730,40 @@ impl ProvidesRegistryState for LockState {
         &mut self.registry
     }
     registry_handlers![OutputState, SeatState];
+}
+
+// ---------------------------------------------------------------------------
+// Output Power Management (DPMS) Handlers
+// ---------------------------------------------------------------------------
+
+impl Dispatch<ZwlrOutputPowerManagerV1, ()> for LockState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwlrOutputPowerManagerV1,
+        _event: <ZwlrOutputPowerManagerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // No events defined for the manager.
+    }
+}
+
+impl Dispatch<ZwlrOutputPowerV1, ()> for LockState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrOutputPowerV1,
+        event: <ZwlrOutputPowerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let zwlr_output_power_v1::Event::Failed = event {
+            tracing::warn!("output power control failed, removing");
+            state.output_power.retain(|p| p != proxy);
+            proxy.destroy();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

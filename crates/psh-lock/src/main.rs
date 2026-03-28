@@ -18,6 +18,7 @@ use smithay_client_toolkit::{
     shm::Shm,
 };
 use wayland_client::{Connection, globals::registry_queue_init};
+use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
 
 use psh_core::config;
 
@@ -52,6 +53,22 @@ fn main() {
     let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor not available");
     let shm = Shm::bind(&globals, &qh).expect("wl_shm not available");
     let session_lock_state = SessionLockState::new(&globals, &qh);
+
+    // Optionally bind output power management (DPMS) — not fatal if missing.
+    let power_manager = if lock_cfg.dpms_timeout_secs > 0 {
+        match globals.bind::<ZwlrOutputPowerManagerV1, _, _>(&qh, 1..=1, ()) {
+            Ok(m) => {
+                tracing::info!("bound zwlr_output_power_manager_v1 for DPMS");
+                Some(m)
+            }
+            Err(_) => {
+                tracing::info!("zwlr_output_power_manager_v1 not available, DPMS disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Set up calloop event loop.
     let mut event_loop: EventLoop<LockState> =
@@ -97,6 +114,9 @@ fn main() {
         render_state,
         last_input: std::time::Instant::now(),
         blanked: false,
+        dpms_active: false,
+        power_manager,
+        output_power: Vec::new(),
         conn: conn.clone(),
         loop_handle,
         pam_sender,
@@ -123,7 +143,13 @@ fn main() {
             .expect("event loop dispatch failed");
     }
 
-    // Clean shutdown.
+    // Clean shutdown — destroy power controls and surfaces.
+    for power in state.output_power.drain(..) {
+        power.destroy();
+    }
+    if let Some(manager) = state.power_manager.take() {
+        manager.destroy();
+    }
     state.lock_surfaces.clear();
     tracing::info!("psh-lock exiting");
 }

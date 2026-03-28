@@ -178,8 +178,11 @@ pub struct LockConfig {
     pub error_color: String,
     /// Optional path to a background image.
     pub background_image: Option<String>,
-    /// Inactivity timeout in seconds — clears password and blanks screen (0 = disabled).
-    pub timeout_secs: u64,
+    /// Inactivity timeout in seconds — clears password and shows blank screen (0 = disabled).
+    pub blank_timeout_secs: u64,
+    /// Inactivity timeout in seconds — powers off monitors via DPMS (0 = disabled).
+    /// Must be >= blank_timeout_secs. Only takes effect if blank_timeout_secs > 0.
+    pub dpms_timeout_secs: u64,
     /// Apply gaussian blur to the background image.
     pub blur_background: bool,
 }
@@ -196,7 +199,8 @@ impl Default for LockConfig {
             password_dot_color: "#cdd6f4".into(),
             error_color: "#f38ba8".into(),
             background_image: None,
-            timeout_secs: 0,
+            blank_timeout_secs: 0,
+            dpms_timeout_secs: 0,
             blur_background: false,
         }
     }
