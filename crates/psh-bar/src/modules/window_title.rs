@@ -1,7 +1,9 @@
 //! Window title module — displays the focused window's title.
 //!
-//! Uses niri IPC when `$NIRI_SOCKET` is set, otherwise falls back to
-//! `ext-foreign-toplevel-list-v1`. Shows an empty label if neither is available.
+//! Uses niri IPC when `$NIRI_SOCKET` is set, falls back to
+//! `zwlr-foreign-toplevel-management-v1` on other compositors (which provides
+//! focus tracking via the `activated` state). Shows an empty label if neither
+//! is available.
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -30,11 +32,31 @@ impl BarModule for WindowTitleModule {
 
         if niri::is_available() {
             setup_niri_window_title(&label, max_len, &ctx.rt);
+        } else if let Some(handle) = crate::wayland::title_handle() {
+            setup_wayland_window_title(&label, max_len, handle);
         }
-        // TODO(phase6): ext-foreign-toplevel-v1 fallback
 
         label.upcast()
     }
+}
+
+/// Set up window title tracking via the shared Wayland monitor thread
+/// (zwlr-foreign-toplevel-management-v1).
+fn setup_wayland_window_title(
+    label: &gtk4::Label,
+    max_len: usize,
+    handle: crate::wayland::WaylandTitleHandle,
+) {
+    let label = label.clone();
+    glib::spawn_future_local(async move {
+        while let Ok(title) = handle.rx.recv().await {
+            let text = match title {
+                Some(t) => truncate_title(&t, max_len),
+                None => String::new(),
+            };
+            label.set_text(&text);
+        }
+    });
 }
 
 /// Set up window title tracking via niri IPC event stream.

@@ -2384,11 +2384,15 @@ dependencies = [
  "niri-ipc",
  "psh-core",
  "reqwest",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "system-tray",
  "tokio",
  "tracing",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
  "zbus",
 ]
 

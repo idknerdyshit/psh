@@ -336,14 +336,19 @@ impl SessionLockHandler for LockState {
         // Store the confirmed lock — `new_output()` uses this for hotplugged outputs.
         self.session_lock = Some(session_lock);
 
-        // Insert inactivity timeout timer if any timeout is configured.
+        // Insert a 1-second timer for clock updates and inactivity timeouts.
         let has_blank = self.config.blank_timeout_secs > 0;
         let has_dpms = self.config.dpms_timeout_secs > 0 && !self.output_power.is_empty();
-        if has_blank || has_dpms {
+        if self.config.show_clock || has_blank || has_dpms {
             let qh_clone = qh.clone();
             let _ = self.loop_handle.insert_source(
                 Timer::from_duration(std::time::Duration::from_secs(1)),
                 move |_, _, state| {
+                    // Redraw for clock updates when the screen is visible.
+                    if state.config.show_clock && !state.blanked {
+                        state.redraw_all(&qh_clone);
+                    }
+
                     if matches!(state.auth_state, AuthState::Authenticating) {
                         return TimeoutAction::ToDuration(std::time::Duration::from_secs(1));
                     }
@@ -793,8 +798,7 @@ fn format_time(fmt: &str, time: std::time::SystemTime) -> String {
         .unwrap_or_default();
     let secs = dur.as_secs();
 
-    // UTC breakdown (good enough for a lock screen clock).
-    // For local time we'd need libc::localtime_r.
+    // Local time breakdown via libc::localtime_r.
     let (hour, min, sec, year, month, day, weekday) = local_time(secs);
 
     let weekday_name = match weekday {

@@ -66,6 +66,7 @@ fn main() {
             .decorated(false)
             .build();
 
+        window.add_css_class("psh-launch-overlay");
         window.init_layer_shell();
         window.set_layer(gtk4_layer_shell::Layer::Overlay);
         window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::Exclusive);

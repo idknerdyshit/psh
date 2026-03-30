@@ -1,8 +1,8 @@
 //! Workspace module — displays workspace buttons with live updates.
 //!
-//! Uses niri IPC when `$NIRI_SOCKET` is set, otherwise falls back to
-//! the `ext-workspace-v1` Wayland protocol. Shows a placeholder if
-//! neither backend is available.
+//! Uses niri IPC when `$NIRI_SOCKET` is set, falls back to the
+//! `ext-workspace-v1` Wayland protocol on other compositors, and
+//! shows static placeholder buttons if neither backend is available.
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -11,6 +11,9 @@ use super::{BarModule, ModuleContext};
 use crate::niri;
 
 /// Information about a single workspace, abstracted from the backend.
+///
+/// Fields are backend-agnostic — both niri IPC and ext-workspace-v1 populate the
+/// same struct, so the GTK rendering code is shared.
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceInfo {
     /// Unique workspace identifier.
@@ -29,7 +32,7 @@ pub(crate) struct WorkspaceInfo {
 
 /// Updates sent from the backend to the GTK thread.
 #[derive(Debug, Clone)]
-enum WorkspaceUpdate {
+pub(crate) enum WorkspaceUpdate {
     /// Full workspace list replacement (from `WorkspacesChanged`).
     Full(Vec<WorkspaceInfo>),
     /// A single workspace was activated (from `WorkspaceActivated`).
@@ -38,7 +41,7 @@ enum WorkspaceUpdate {
 
 /// Commands sent from the GTK thread to the backend.
 #[derive(Debug, Clone)]
-enum WorkspaceCommand {
+pub(crate) enum WorkspaceCommand {
     /// Focus the workspace with this id.
     Focus(u64),
 }
@@ -60,9 +63,10 @@ impl BarModule for WorkspacesModule {
 
         if niri::is_available() {
             setup_niri_workspaces(&container, ctx);
+        } else if let Some(handle) = crate::wayland::workspace_handle() {
+            setup_wayland_workspaces(&container, handle, ctx.config.show_all_workspaces);
         } else {
             setup_placeholder_workspaces(&container);
-            // TODO(phase6): ext-workspace-v1 fallback
         }
 
         container.upcast()
@@ -108,6 +112,48 @@ fn setup_niri_workspaces(container: &gtk4::Box, ctx: &ModuleContext) {
                 }
             }
             rebuild_workspace_buttons(&container, &workspaces, &cmd_tx_clone, show_all);
+        }
+    });
+}
+
+/// Set up workspace buttons driven by ext-workspace-v1 via the shared Wayland monitor thread.
+fn setup_wayland_workspaces(
+    container: &gtk4::Box,
+    handle: crate::wayland::WaylandWorkspaceHandle,
+    show_all: bool,
+) {
+    let (cmd_tx, cmd_rx) = async_channel::bounded::<WorkspaceCommand>(4);
+
+    // Forward GTK-side commands to the Wayland thread via the sync mpsc sender.
+    let wayland_cmd_tx = handle.cmd_tx;
+    glib::spawn_future_local(async move {
+        while let Ok(cmd) = cmd_rx.recv().await {
+            let _ = wayland_cmd_tx.send(cmd);
+        }
+    });
+
+    let container = container.clone();
+    glib::spawn_future_local(async move {
+        let mut workspaces: Vec<WorkspaceInfo> = Vec::new();
+        while let Ok(update) = handle.rx.recv().await {
+            match update {
+                WorkspaceUpdate::Full(new_workspaces) => {
+                    workspaces = new_workspaces;
+                }
+                WorkspaceUpdate::Activated { id, focused } => {
+                    if focused {
+                        for ws in &mut workspaces {
+                            ws.is_focused = ws.id == id;
+                        }
+                    }
+                    for ws in &mut workspaces {
+                        if ws.id == id {
+                            ws.is_active = true;
+                        }
+                    }
+                }
+            }
+            rebuild_workspace_buttons(&container, &workspaces, &cmd_tx, show_all);
         }
     });
 }

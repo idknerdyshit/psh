@@ -6,6 +6,7 @@
 
 mod modules;
 mod niri;
+mod wayland;
 
 use gtk4::prelude::*;
 use gtk4_layer_shell::LayerShell;

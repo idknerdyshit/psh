@@ -248,6 +248,10 @@
 }
 
 /* Launcher */
+.psh-launch-overlay {
+    background-color: transparent;
+}
+
 .psh-launch {
     background-color: @psh-base;
     border: 1px solid @psh-surface1;
