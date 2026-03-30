@@ -10,7 +10,7 @@ use crate::{PshError, Result};
 
 /// Top-level psh configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PshConfig {
     pub theme: ThemeConfig,
     pub bar: BarConfig,
@@ -24,7 +24,7 @@ pub struct PshConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ThemeConfig {
     pub name: String,
 }
@@ -39,7 +39,7 @@ impl Default for ThemeConfig {
 
 /// Configuration for the status bar.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BarConfig {
     /// Bar position: top or bottom of the screen.
     pub position: BarPosition,
@@ -77,7 +77,7 @@ pub enum BarPosition {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NotifyConfig {
     pub max_visible: u32,
     pub default_timeout_ms: u64,
@@ -99,11 +99,11 @@ impl Default for NotifyConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PolkitConfig {}
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LaunchConfig {
     pub terminal: Option<String>,
     pub max_results: Option<usize>,
@@ -111,7 +111,7 @@ pub struct LaunchConfig {
 
 /// Per-output wallpaper override. Unset fields inherit from the top-level `[wall]` section.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OutputWallConfig {
     /// Image path (or directory for slideshow) for this specific output.
     pub path: Option<PathBuf>,
@@ -122,7 +122,7 @@ pub struct OutputWallConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WallConfig {
     /// Default wallpaper image path, or directory path for slideshow mode.
     pub path: Option<PathBuf>,
@@ -158,7 +158,7 @@ pub enum WallMode {
 
 /// Configuration for the screen locker.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LockConfig {
     /// Show a clock on the lock screen.
     pub show_clock: bool,
@@ -208,7 +208,7 @@ impl Default for LockConfig {
 
 /// Configuration for the idle monitor daemon.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct IdleConfig {
     /// Idle timeout in seconds before locking (0 = disabled).
     pub idle_timeout_secs: u64,
@@ -230,7 +230,7 @@ impl Default for IdleConfig {
 
 /// Configuration for the clipboard manager.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ClipConfig {
     pub max_history: usize,
     pub persist: bool,
@@ -280,18 +280,12 @@ pub fn load_from(path: &Path) -> Result<PshConfig> {
         }
         Err(e) => return Err(PshError::Io(e)),
     };
-    let deserializer = toml::Deserializer::new(&contents);
-    let mut unknown_keys = Vec::new();
-    let mut config: PshConfig = serde_ignored::deserialize(deserializer, |path| {
-        unknown_keys.push(path.to_string());
-    })
-    .map_err(|source| PshError::ConfigParse {
-        path: path.to_owned(),
-        source,
+    let mut config: PshConfig = toml::from_str(&contents).map_err(|source| {
+        PshError::ConfigParse {
+            path: path.to_owned(),
+            source,
+        }
     })?;
-    for key in &unknown_keys {
-        warn!("unknown config key: {key}");
-    }
 
     // Expand tilde in paths that users are likely to write with ~/
     if let Some(ref p) = config.wall.path {
@@ -463,43 +457,23 @@ mod tests {
     }
 
     #[test]
-    fn unknown_top_level_key_still_parses() {
+    fn unknown_top_level_key_rejected() {
         let toml = r#"
             bogus_key = "hello"
             [bar]
             position = "top"
         "#;
-        let config: PshConfig = toml::from_str(toml).unwrap();
-        assert!(matches!(config.bar.position, BarPosition::Top));
+        assert!(toml::from_str::<PshConfig>(toml).is_err());
     }
 
     #[test]
-    fn unknown_nested_key_still_parses() {
+    fn unknown_nested_key_rejected() {
         let toml = r#"
             [notify]
             max_visible = 3
             nonexistent_field = true
         "#;
-        let config: PshConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.notify.max_visible, 3);
-    }
-
-    #[test]
-    fn serde_ignored_detects_unknown_keys() {
-        let input = r#"
-            bogus = "hi"
-            [notify]
-            max_visible = 3
-            fake_field = true
-        "#;
-        let deserializer = toml::Deserializer::new(input);
-        let mut ignored = Vec::new();
-        let _config: PshConfig = serde_ignored::deserialize(deserializer, |path| {
-            ignored.push(path.to_string());
-        })
-        .unwrap();
-        assert!(ignored.contains(&"bogus".to_string()));
-        assert!(ignored.contains(&"notify.fake_field".to_string()));
+        assert!(toml::from_str::<PshConfig>(toml).is_err());
     }
 
     #[test]
