@@ -224,23 +224,51 @@ impl LockState {
         self.password.zeroize();
     }
 
-    /// Power off all outputs via DPMS (if the protocol is available).
+    /// Power off all outputs via DPMS.
+    ///
+    /// Prefers the Wayland `zwlr_output_power_manager_v1` protocol when
+    /// available, otherwise falls back to `niri msg action power-off-monitors`.
     pub fn dpms_off(&self) {
-        for power in &self.output_power {
-            power.set_mode(zwlr_output_power_v1::Mode::Off);
-        }
         if !self.output_power.is_empty() {
+            for power in &self.output_power {
+                power.set_mode(zwlr_output_power_v1::Mode::Off);
+            }
             tracing::info!("DPMS: powering off {} output(s)", self.output_power.len());
+        } else {
+            tracing::info!("DPMS: falling back to niri msg action power-off-monitors");
+            if let Err(e) = std::process::Command::new("niri")
+                .args(["msg", "action", "power-off-monitors"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                tracing::warn!("DPMS fallback failed: {e}");
+            }
         }
     }
 
-    /// Power on all outputs via DPMS (if the protocol is available).
+    /// Power on all outputs via DPMS.
+    ///
+    /// Prefers the Wayland `zwlr_output_power_manager_v1` protocol when
+    /// available, otherwise falls back to `niri msg action power-on-monitors`.
     pub fn dpms_on(&self) {
-        for power in &self.output_power {
-            power.set_mode(zwlr_output_power_v1::Mode::On);
-        }
         if !self.output_power.is_empty() {
+            for power in &self.output_power {
+                power.set_mode(zwlr_output_power_v1::Mode::On);
+            }
             tracing::info!("DPMS: powering on {} output(s)", self.output_power.len());
+        } else {
+            tracing::info!("DPMS: falling back to niri msg action power-on-monitors");
+            if let Err(e) = std::process::Command::new("niri")
+                .args(["msg", "action", "power-on-monitors"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                tracing::warn!("DPMS fallback failed: {e}");
+            }
         }
     }
 
