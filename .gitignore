@@ -17,3 +17,4 @@ Cargo.lock is tracked for binaries
 
 # Claude Code
 .claude/
+BRAINSTORM.md
