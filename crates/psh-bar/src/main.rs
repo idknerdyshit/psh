@@ -8,6 +8,11 @@ mod modules;
 mod niri;
 mod wayland;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex as StdMutex};
+
 use gtk4::prelude::*;
 use gtk4_layer_shell::LayerShell;
 use psh_core::config::{self, BarConfig, BarPosition};
@@ -65,6 +70,12 @@ fn main() {
         .build();
 
     app.connect_activate(move |app| {
+        // Guard against re-activation creating duplicate bars and IPC hubs
+        if !app.windows().is_empty() {
+            tracing::debug!("already running, ignoring re-activation");
+            return;
+        }
+
         psh_core::theme::apply_theme(&cfg.theme.name);
 
         // Watch theme CSS for live reload
@@ -83,91 +94,102 @@ fn main() {
         // Channel: modules -> IPC hub (outbound to clients)
         let (outbound_tx, outbound_rx) = async_channel::bounded::<Message>(64);
 
-        // Per-module inbound channels: IPC hub -> modules (across all monitors)
-        let mut inbound_senders: Vec<async_channel::Sender<Message>> = Vec::new();
-
-        // Build module lists from config or defaults
-        let left_names = module_names(&bar_cfg.modules_left, modules::DEFAULT_LEFT);
-        let center_names = module_names(&bar_cfg.modules_center, modules::DEFAULT_CENTER);
-        let right_names = module_names(&bar_cfg.modules_right, modules::DEFAULT_RIGHT);
-
-        let height = bar_cfg.height.unwrap_or(32) as i32;
+        // Per-module inbound channels shared with the IPC hub and hotplug handler
+        let inbound_senders: Arc<StdMutex<Vec<async_channel::Sender<Message>>>> =
+            Arc::new(StdMutex::new(Vec::new()));
 
         // Enumerate monitors and create one bar window per output.
         let display = gtk4::gdk::Display::default().expect("no GDK display");
         let monitors = display.monitors();
         let n_monitors = monitors.n_items();
 
-        let monitor_count = n_monitors.max(1);
-        for i in 0..monitor_count {
-            let monitor = if n_monitors > 1 {
-                monitors
+        // Track bar windows by monitor connector for hotplug management
+        let windows: Rc<RefCell<HashMap<String, gtk4::ApplicationWindow>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+
+        if n_monitors > 0 {
+            for i in 0..n_monitors {
+                if let Some(monitor) = monitors
                     .item(i)
                     .and_then(|obj| obj.downcast::<gtk4::gdk::Monitor>().ok())
-            } else {
-                None
-            };
-
-            // Each monitor gets its own module instances and widget tree.
-            let left = build_section(
-                &left_names,
-                &bar_cfg,
-                &outbound_tx,
-                &mut inbound_senders,
-                &rt_handle,
-            );
-            left.set_margin_start(8);
-            left.add_css_class("psh-bar-left");
-
-            let center = build_section(
-                &center_names,
-                &bar_cfg,
-                &outbound_tx,
-                &mut inbound_senders,
-                &rt_handle,
-            );
-            center.add_css_class("psh-bar-center");
-
-            let right = build_section(
-                &right_names,
-                &bar_cfg,
-                &outbound_tx,
-                &mut inbound_senders,
-                &rt_handle,
-            );
-            right.set_margin_end(8);
-            right.add_css_class("psh-bar-right");
-
-            let bar = gtk4::CenterBox::new();
-            bar.add_css_class("psh-bar");
-            bar.set_start_widget(Some(&left));
-            bar.set_center_widget(Some(&center));
-            bar.set_end_widget(Some(&right));
-
-            let window = gtk4::ApplicationWindow::builder()
-                .application(app)
-                .build();
-
-            window.init_layer_shell();
-            window.set_layer(gtk4_layer_shell::Layer::Top);
-            window.set_anchor(gtk4_layer_shell::Edge::Left, true);
-            window.set_anchor(gtk4_layer_shell::Edge::Right, true);
-
-            match bar_cfg.position {
-                BarPosition::Top => window.set_anchor(gtk4_layer_shell::Edge::Top, true),
-                BarPosition::Bottom => window.set_anchor(gtk4_layer_shell::Edge::Bottom, true),
+                {
+                    let key = monitor_connector(&monitor, i);
+                    let window = create_bar_window(
+                        app,
+                        Some(&monitor),
+                        &bar_cfg,
+                        &outbound_tx,
+                        &inbound_senders,
+                        &rt_handle,
+                    );
+                    windows.borrow_mut().insert(key, window);
+                }
             }
+        } else {
+            // No monitors detected (unlikely) — create one unassigned bar
+            create_bar_window(
+                app,
+                None,
+                &bar_cfg,
+                &outbound_tx,
+                &inbound_senders,
+                &rt_handle,
+            );
+        }
 
-            window.set_default_height(height);
-            window.auto_exclusive_zone_enable();
-            window.set_namespace(Some("psh-bar"));
+        // Handle monitor hotplug: add/remove bar windows as monitors appear/disappear
+        {
+            let windows = windows.clone();
+            let app = app.downgrade();
+            let bar_cfg = bar_cfg.clone();
+            let outbound_tx = outbound_tx.clone();
+            let inbound_senders = inbound_senders.clone();
+            let rt_handle = rt_handle.clone();
 
-            if let Some(ref mon) = monitor {
-                window.set_monitor(Some(mon));
-            }
+            monitors.connect_items_changed(move |model, _pos, _removed, _added| {
+                let Some(app) = app.upgrade() else {
+                    return;
+                };
+                let mut wins = windows.borrow_mut();
 
-            window.set_child(Some(&bar));
-            window.present();
+                // Build current monitor set
+                let mut current: HashMap<String, gtk4::gdk::Monitor> = HashMap::new();
+                for i in 0..model.n_items() {
+                    if let Some(mon) = model
+                        .item(i)
+                        .and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok())
+                    {
+                        current.insert(monitor_connector(&mon, i), mon);
+                    }
+                }
+
+                // Close bars for disconnected monitors
+                wins.retain(|conn, window| {
+                    if current.contains_key(conn) {
+                        true
+                    } else {
+                        tracing::info!("monitor removed: {conn}, closing bar");
+                        window.close();
+                        false
+                    }
+                });
+
+                // Create bars for newly connected monitors
+                for (conn, mon) in &current {
+                    if !wins.contains_key(conn) {
+                        tracing::info!("monitor added: {conn}, creating bar");
+                        let window = create_bar_window(
+                            &app,
+                            Some(mon),
+                            &bar_cfg,
+                            &outbound_tx,
+                            &inbound_senders,
+                            &rt_handle,
+                        );
+                        wins.insert(conn.clone(), window);
+                    }
+                }
+            });
         }
 
         // Spawn IPC hub on the shared runtime
@@ -188,6 +210,14 @@ fn main() {
     app.run_with_args::<String>(&[]);
 }
 
+/// Get a stable identifier for a GDK monitor, preferring its connector name.
+fn monitor_connector(monitor: &gtk4::gdk::Monitor, index: u32) -> String {
+    monitor
+        .connector()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| format!("monitor-{index}"))
+}
+
 /// Resolve module names from config, falling back to defaults if config is empty.
 fn module_names<'a>(configured: &'a [String], defaults: &'a [&'a str]) -> Vec<&'a str> {
     if configured.is_empty() {
@@ -195,6 +225,88 @@ fn module_names<'a>(configured: &'a [String], defaults: &'a [&'a str]) -> Vec<&'
     } else {
         configured.iter().map(|s| s.as_str()).collect()
     }
+}
+
+/// Create a bar window with all modules, optionally assigned to a specific monitor.
+fn create_bar_window(
+    app: &gtk4::Application,
+    monitor: Option<&gtk4::gdk::Monitor>,
+    bar_cfg: &BarConfig,
+    outbound_tx: &async_channel::Sender<Message>,
+    inbound_senders: &Arc<StdMutex<Vec<async_channel::Sender<Message>>>>,
+    rt_handle: &tokio::runtime::Handle,
+) -> gtk4::ApplicationWindow {
+    let left_names = module_names(&bar_cfg.modules_left, modules::DEFAULT_LEFT);
+    let center_names = module_names(&bar_cfg.modules_center, modules::DEFAULT_CENTER);
+    let right_names = module_names(&bar_cfg.modules_right, modules::DEFAULT_RIGHT);
+    let height = bar_cfg.height.unwrap_or(32) as i32;
+
+    let mut local_senders = Vec::new();
+
+    let left = build_section(
+        &left_names,
+        bar_cfg,
+        outbound_tx,
+        &mut local_senders,
+        rt_handle,
+    );
+    left.set_margin_start(8);
+    left.add_css_class("psh-bar-left");
+
+    let center = build_section(
+        &center_names,
+        bar_cfg,
+        outbound_tx,
+        &mut local_senders,
+        rt_handle,
+    );
+    center.add_css_class("psh-bar-center");
+
+    let right = build_section(
+        &right_names,
+        bar_cfg,
+        outbound_tx,
+        &mut local_senders,
+        rt_handle,
+    );
+    right.set_margin_end(8);
+    right.add_css_class("psh-bar-right");
+
+    // Register new module channels with the IPC hub
+    inbound_senders.lock().unwrap().extend(local_senders);
+
+    let bar = gtk4::CenterBox::new();
+    bar.add_css_class("psh-bar");
+    bar.set_start_widget(Some(&left));
+    bar.set_center_widget(Some(&center));
+    bar.set_end_widget(Some(&right));
+
+    let window = gtk4::ApplicationWindow::builder()
+        .application(app)
+        .build();
+
+    window.init_layer_shell();
+    window.set_layer(gtk4_layer_shell::Layer::Top);
+    window.set_anchor(gtk4_layer_shell::Edge::Left, true);
+    window.set_anchor(gtk4_layer_shell::Edge::Right, true);
+
+    match bar_cfg.position {
+        BarPosition::Top => window.set_anchor(gtk4_layer_shell::Edge::Top, true),
+        BarPosition::Bottom => window.set_anchor(gtk4_layer_shell::Edge::Bottom, true),
+    }
+
+    window.set_default_height(height);
+    window.auto_exclusive_zone_enable();
+    window.set_namespace(Some("psh-bar"));
+
+    if let Some(mon) = monitor {
+        window.set_monitor(Some(mon));
+    }
+
+    window.set_child(Some(&bar));
+    window.present();
+
+    window
 }
 
 /// Build a horizontal box of modules for one bar section.
@@ -236,10 +348,8 @@ fn build_section(
 /// - Proactively removes disconnected clients via a removal channel
 async fn run_ipc_hub(
     outbound_rx: async_channel::Receiver<Message>,
-    inbound_senders: Vec<async_channel::Sender<Message>>,
+    inbound_senders: Arc<StdMutex<Vec<async_channel::Sender<Message>>>>,
 ) -> psh_core::Result<()> {
-    use std::collections::HashMap;
-    use std::sync::Arc;
     use tokio::net::unix::OwnedWriteHalf;
     use tokio::sync::Mutex;
 
@@ -296,8 +406,9 @@ async fn run_ipc_hub(
             while let Ok(msg) = psh_core::ipc::recv_from(&mut read_half).await {
                 tracing::debug!("hub received from client {client_id}: {msg:?}");
 
-                // Fan out to module inbound channels
-                for tx in &inbound_senders {
+                // Fan out to module inbound channels (snapshot under lock, then send)
+                let senders = inbound_senders.lock().unwrap().clone();
+                for tx in &senders {
                     if tx.send(msg.clone()).await.is_err() {
                         tracing::debug!("module inbound channel closed");
                     }
@@ -326,7 +437,7 @@ async fn run_ipc_hub(
 
 /// Send a message to a single client by ID. Removes the client on write failure.
 async fn send_to_client(
-    clients: &tokio::sync::Mutex<std::collections::HashMap<u64, tokio::net::unix::OwnedWriteHalf>>,
+    clients: &tokio::sync::Mutex<HashMap<u64, tokio::net::unix::OwnedWriteHalf>>,
     client_id: u64,
     msg: &Message,
 ) {
@@ -341,7 +452,7 @@ async fn send_to_client(
 
 /// Send a message to all connected clients, removing any that fail to write.
 async fn broadcast(
-    clients: &tokio::sync::Mutex<std::collections::HashMap<u64, tokio::net::unix::OwnedWriteHalf>>,
+    clients: &tokio::sync::Mutex<HashMap<u64, tokio::net::unix::OwnedWriteHalf>>,
     msg: &Message,
 ) {
     let mut cl = clients.lock().await;
